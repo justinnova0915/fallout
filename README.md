@@ -48,13 +48,13 @@ On the desktop side, a custom-written daemon in GOLANG runs continuously to tran
 
 #### 2. Flashing Firmware
 - **Smart Display:** The screen graphics are built and flashed to the hardware independently using DWIN's native configuration environment and software utility tools call DGUS. Simply follow their Bilibili tutorial.
-- **ESP32 Core:** Open the `Fallout_Software/esp32` project in your environment, then build and flash using vscode's esp-idf tool.
+- **ESP32 Core:** Open the `Fallout_Software/Firmware` project in your environment, then build and flash using vscode's esp-idf tool.
 
 #### 3. Desktop Software Setup
 The desktop side uses a custom daemon written in `GO` that runs continuously to catch Bluetooth strings from the ESP32 and talk to your window manager.
 1. Move into the daemon directory:
     ```bash
-    cd Fallout_Software/daemon
+    cd Fallout_Software/Daemon
     ```
 2. Build the binary:
     ```bash
