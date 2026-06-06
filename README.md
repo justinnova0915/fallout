@@ -15,14 +15,14 @@ The TALOS-01 is a desktop device designed to make navigating workspace-heavy, ti
 ## Device Design
 
 The TALOS-01 design is heavily inspired by the design language of *Arknights: Endfield*. The entire body uses an matching color palette of black, grey, white, and yellow, detailed with topographic lines and techy text accents.
-![3D Model](https:\Assets\Fallout_Render.png)
+![3D Model](https://github.com/justinnova0915/fallout/blob/master/Assets/Fallout_Render.png)
 
 > Disclaimer: This project is a non-commercial, fan-made creation featuring visual and UI assets inspired by *Arknights: Endfield*, which remain the intellectual property of **Hypergryph**.
 
 * **PCB and circuitry:**
 It's built around a custom parent PCB that hosts every single chip. The board has exposed headers to connect to the moving slider handle, and the macro pad. (Excuse any messy routing) ;).  
 To power it, you can plug in USB-C to feed the TP4056 charging circuit, or let it run completely wireless off the 18650 batteries. Power leaving the circuit is stepped up using two independent MT3608 boost converters (a 12V line for the smart display and a 5V line for the ESP32 and voltmeter), before hitting an AMS1117-3.3 linear regulator for the shared sensor bus.
-![3D Model](https:\Assets\PCB.png)
+![PCB](https://github.com/justinnova0915/fallout/blob/master/Assets/PCB.png)
 
 * **The Slider & Encoder:** The custom 3D-printed handle rides on the MGN7H rail and holds a DRV2605 driver with a motor to deliver physical haptic feedback clicks as you pass items. Distance tracking is calculated using two SS49E hall effect sensors positioned exactly a quarter turn from each other on the bottom of the block. All sensors and drivers tucked inside the moving handle connect back to the parent PCB via a Flat Flexible Cable (FFC).
 
