@@ -40,20 +40,20 @@ On the desktop side, a custom-written daemon in GOLANG runs continuously to tran
 #### BOM
 I got most of my components in person in China, but I have found equivalents for around the same price on TaoBao, so that is what my BOM is going to be based of off.
 
-You can get the BOM [here](/production/BOM_JLCPCB.csv).
+You can get the BOM [here](https://github.com/justinnova0915/fallout/blob/master/BOM.xlsx).
 
 #### CAD
-The CAD files are under [`Fallout_CAD`](/production/BOM_JLCPCB.csv). I designed it in fusion so you can find the f3d and stp files there.
+The CAD files are under [`Fallout_CAD`](https://github.com/justinnova0915/fallout/tree/master/Fallout_CAD). I designed it in fusion so you can find the f3d and stp files there.
 
 #### PCB
-> Since I was using the breakout or module versions of most ICs, I had to make custom footprints for them.
+> Since I was using the breakout or module versions of most ICs (its my first PCB!), I had to make custom symbol and footprints for them.
 
-The KiCAD sourfiles are under [`Fallout_PCB`](/production/BOM_JLCPCB.csv)
+The KiCAD sourfiles are under [`Fallout_PCB`](https://github.com/justinnova0915/fallout/tree/master/Fallout_PCB)
 
 #### Code
 The ESP32 code is written in `C++` using `ESP-IDF`, and the Hyprland Daemon is written in `GO`.
 
-The Code is under [`Fallout_Software`](/production/BOM_JLCPCB.csv)
+The Code is under [`Fallout_Software`](https://github.com/justinnova0915/fallout/tree/master/Fallout_Software)
 
 ## Credits
 
