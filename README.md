@@ -2,7 +2,7 @@
 
 The TALOS-01 is a desktop device designed to make navigating workspace-heavy, tiling operating systems (like Arch Linux Hyprland or macOS) more straight forward by making it physical. No more memorizing convoluted keyboard shortcuts just to move a window. This is my Fallout projects for Hack Club, so I'm super excited to share it!
 
-[Zine](https://github.com/justinnova0915/fallout/blob/master/Assets/Zine.png)
+![Zine](https://github.com/justinnova0915/fallout/blob/master/Assets/Zine.png)
 
 ## Custom Features
 
