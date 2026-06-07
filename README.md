@@ -42,10 +42,14 @@ On the desktop side, a custom-written daemon in GOLANG runs continuously to tran
 ## How to Build and Use
 
 #### 1. Hardware Assembly
-- **PCB:** Get the board fabricated using the gerbers files inside `Fallout_PCB`.
-- **BOM:** Grab all components listed in the [BOM](https://github.com/justinnova0915/fallout/blob/master/BOM.csv).
-- **3D Printing & Assembly:** Print the housing from `Fallout_CAD`, and assemble according to the 3d model.
-
+1. **PCB:** Get the board fabricated using the gerbers files inside `Fallout_PCB`.
+2. **Components:** Grab all components listed in the [BOM](https://github.com/justinnova0915/fallout/blob/master/BOM.csv).
+3. **3D Printing & Assembly:** Print the housing from `Fallout_CAD`, and assemble according to the 3d model.
+4. **Wiring Diagram**  
+![Wiring Diagram](https://github.com/justinnova0915/fallout/blob/master/Assets/Wiring.png)  
+Wiring diagram for the main board  
+![Macro Pad Wiring Diagram](https://github.com/justinnova0915/fallout/blob/master/Assets/Wiring_left.png)  
+Macro Pad Wiring Diagram
 #### 2. Flashing Firmware
 - **Smart Display:** The screen graphics are built and flashed to the hardware independently using DWIN's native configuration environment and software utility tools call DGUS. Simply follow their Bilibili tutorial.
 - **ESP32 Core:** Open the `Fallout_Software/Firmware` project in your environment, then build and flash using vscode's esp-idf tool.
