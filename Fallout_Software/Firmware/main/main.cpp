@@ -22,7 +22,7 @@ static const char* MAIN_TAG = "FALLOUT_MAIN";
 
 /**
  * @brief putting everything together
- * @details inits everything :P
+ * @details Inits all hardware systems and drives cross-core coordination pipelines.
  */
 extern "C" void app_main(void) {
     ESP_LOGI(MAIN_TAG, "Starting");
@@ -40,18 +40,18 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, SENSOR_A_CHAN, &adc_cfg));
     ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, SENSOR_B_CHAN, &adc_cfg));
 
-    // Puts the slider code onto its own core
+    // Puts the slider code onto its own core (Core 1)
     xTaskCreatePinnedToCore(
         fader_tracking_task, 
         "fader_task", 
         4096, 
         (void*)adc1_handle, 
         configMAX_PRIORITIES - 1, 
-        NULL, 
+        nullptr, 
         1
     );
 
-    // Screen init
+    // Screen init (UART interface for DWIN display panel)
     const uart_port_t dwin_uart = UART_NUM_1;
     uart_config_t uart_config = {};
     uart_config.baud_rate = 115200; 
@@ -66,33 +66,33 @@ extern "C" void app_main(void) {
     
     static Screen carousel({.uart_port = dwin_uart, .step_duration_ms = 300});
     
-    // init other peripherals
+    // Init other peripheral control objects
     static VoltMeter gauge({.gpio_pin = 14, .timer_sel = LEDC_TIMER_0, .channel_sel = LEDC_CHANNEL_0});
     static InputManager inputs({.sda_pin = 6, .scl_pin = 7, .pcf_address = 0x20});
     static BluetoothManager bt_serial("Fallout-Terminal");
 
-    // tracking vars
+    // Tracking registers for edge detection
     uint32_t last_telemetry_time = 0;
-    
     bool last_power = false;
     int32_t last_ticks = 0;
     int last_macro_key = 0;
 
-    // main loop
+    // Core execution loop running on Core 0
     while (true) {
+        // Step local state animations and process key matrix scans
         carousel.update();
         inputs.update();
 
-        // power btn
+        // 1. POWER BUTTON HANDLER
         bool current_power = inputs.isPowerButtonPressed();
         if (current_power && !last_power) {
             bt_serial.writeString("CMD:POWER_PRESS\n");
         }
         last_power = current_power;
 
-        // slider
+        // 2. PHYSICAL STRIDE SLIDER HANDLER
         int32_t current_ticks = global_ticks;
-        float current_mm = (current_ticks * POLE_PITCH_MM) / 4.0f; // Calculate physical mm distance
+        float current_mm = (current_ticks * POLE_PITCH_MM) / 4.0f; // Calculate physical mm displacement
 
         if (current_ticks != last_ticks) {
             char fader_buf[32];
@@ -101,7 +101,7 @@ extern "C" void app_main(void) {
             last_ticks = current_ticks;
         }
 
-        // Macro Keys
+        // 3. WING MACRO KEY PAD HANDLER
         int current_macro = inputs.getPressedMacroKey();
         if (current_macro != last_macro_key) {
             if (current_macro != 0) {
@@ -112,29 +112,34 @@ extern "C" void app_main(void) {
             last_macro_key = current_macro;
         }
 
-        // Bluetooth Incoming Data
+        // 4. INBOUND WIRELESS DATA ROUTER
         if (bt_serial.available()) {
             std::string msg = bt_serial.readStringUntil('\n');
-            float cpu = 0.0f, ram = 0.0f;
-            if (sscanf(msg.c_str(), "STATS:CPU:%f:RAM:%f", &cpu, &ram) == 2) {
-                float target_voltage = (cpu / 100.0f) * 5.0f;
-                gauge.setVoltage(target_voltage);
+            
+            // Check Match Token A: Outbound Telemetry Metrics (PC -> Voltmeter Gage)
+            if (msg.rfind("STATS:", 0) == 0) {
+                float cpu = 0.0f, ram = 0.0f;
+                if (sscanf(msg.c_str(), "STATS:CPU:%f:RAM:%f", &cpu, &ram) == 2) {
+                    float target_voltage = (cpu / 100.0f) * 5.0f;
+                    gauge.setVoltage(target_voltage);
+                }
+            }
+            // Check Match Token B: Hyprland Workspace Viewport Configuration (PC -> Carousel Engine)
+            else if (msg.rfind("WS_MAP:", 0) == 0) {
+                int active_workspace = 1;
+                // Buffer to hold app list layout token data without breaking execution path
+                char apps_layout[256] = {0}; 
+                
+                if (sscanf(msg.c_str(), "WS_MAP:%d:%255s", &active_workspace, apps_layout) >= 1) {
+                    ESP_LOGI(MAIN_TAG, "[RECEPTION ROUTER] Latching spotlight focus viewport to workspace index: %d", active_workspace);
+                    
+                    // Dispatch the updated viewport coordinate target down to your screen animation loop
+                    carousel.scrollToWorkspace(static_cast<uint8_t>(active_workspace));
+                }
             }
         }
 
-        // Debug prints
-        uint32_t now_ms = esp_log_timestamp();
-        if (now_ms - last_telemetry_time >= 40) { 
-            last_telemetry_time = now_ms;
-            
-            printf(">RawA:%d\n", global_raw_a);
-            printf(">RawB:%d\n", global_raw_b);
-            printf(">PosMM:%.2f\n", current_mm);
-            printf(">DirStr:%s\n", global_dir);
-            printf(">MacroKey:%d\n", current_macro);
-            printf(">PowerBtn:%d\n", current_power ? 1 : 0);
-        }
-
+        // Execution throttling pass to allow background low-priority operations to cycle
         vTaskDelay(pdMS_TO_TICKS(20)); 
     }
 }

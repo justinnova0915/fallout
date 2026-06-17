@@ -21,8 +21,8 @@ volatile const char* global_dir = "IDLE    ";
 /**
  * @brief Task for tracking the slider position
  * @details two SS49E hall effect sensors are placed quarter phase (quadrature) from each other.
- *          we track the difference in magnetic pole and calculate the distancer traveled via number
- *          of full phases we detected.
+ * we track the difference in magnetic pole and calculate the distancer traveled via number
+ * of full phases we detected.
  * @param pvParameters 
  */
 void fader_tracking_task(void* pvParameters) {
@@ -31,6 +31,7 @@ void fader_tracking_task(void* pvParameters) {
 
     while (1) {
         int raw_a = 0, raw_b = 0;
+        bool state_changed = false;
         
         if (adc_oneshot_read(adc1_handle, SENSOR_A_CHAN, &raw_a) == ESP_OK &&
             adc_oneshot_read(adc1_handle, SENSOR_B_CHAN, &raw_b) == ESP_OK) {
@@ -45,6 +46,7 @@ void fader_tracking_task(void* pvParameters) {
             
             // Moving forward follows a 2 -> 3 -> 1 -> 0 pattern
             if (current_state != last_state) {
+                state_changed = true;
                 // Quadrature direction decoding
                 if ((last_state == 0 && current_state == 2) || 
                     (last_state == 2 && current_state == 3) || 
@@ -53,7 +55,7 @@ void fader_tracking_task(void* pvParameters) {
                     global_ticks = global_ticks + 1;
                     global_dir = "FORWARD ";
                 } else {
-            // Moving backward follows any other pattern
+                    // Moving backward follows any other pattern
                     global_ticks = global_ticks - 1;
                     global_dir = "BACKWARD";
                 }
@@ -61,7 +63,15 @@ void fader_tracking_task(void* pvParameters) {
             }
         }
 
-        // skips the OS delay
-        portYIELD(); 
+        // SMART WATCHDOG FIXED YIELD LAYER:
+        if (state_changed) {
+            // When moving, skip OS delays to process the phase changes instantly
+            global_dir = (global_dir[0] == 'F') ? "FORWARD " : "BACKWARD";
+            portYIELD(); 
+        } else {
+            // When sitting idle, drop back execution for 1 tick so IDLE1 can feed the watchdog
+            global_dir = "IDLE    ";
+            vTaskDelay(1);
+        }
     }
 }

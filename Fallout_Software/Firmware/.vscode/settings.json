@@ -3,7 +3,7 @@
   "idf.openOcdConfigs": [
     "board/esp32s3-builtin.cfg"
   ],
-  "idf.currentSetup": "C:\\esp\\v6.0.1\\esp-idf",
+  "idf.currentSetup": "/home/Justin/.espressif/v6.0.1/esp-idf",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32s3"
   },
@@ -15,5 +15,6 @@
   ],
   "C_Cpp.default.compilerPath": "c:\\Espressif\\tools\\xtensa-esp-elf\\esp-15.2.0_20251204\\xtensa-esp-elf\\bin\\xtensa-esp32s2-elf-gcc.exe",
   "idf.flashType": "UART",
-  "idf.portWin": "COM3"
+  "idf.portWin": "COM3",
+  "idf.port": "/dev/ttyACM0"
 }
