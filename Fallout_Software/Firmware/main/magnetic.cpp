@@ -20,8 +20,8 @@ volatile const char* global_dir = "IDLE    ";
 // Dedicated tracking loop running on Core 1
 /**
  * @brief Task for tracking the slider position
- * @details two SS49E hall effect sensors are placed quarter phase (quadrature) from each other.
- * we track the difference in magnetic pole and calculate the distancer traveled via number
+ * @details Two SS49E hall effect sensors are placed quarter phase (quadrature) from each other.
+ * We track the difference in magnetic pole and calculate the distance traveled via number
  * of full phases we detected.
  * @param pvParameters 
  */

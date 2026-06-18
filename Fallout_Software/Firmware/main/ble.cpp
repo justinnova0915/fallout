@@ -53,7 +53,7 @@ static void ble_on_gatt_register(struct ble_gatt_register_ctxt *ctxt, void *arg)
 static int gatt_callback(uint16_t conn_handle, uint16_t attr_handle, struct ble_gatt_access_ctxt *ctxt, void *arg) {
     if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
         struct os_mbuf *om = ctxt->om;
-        while (om != NULL) {
+        while (om != nullptr) {
             s_rx_buffer.append(reinterpret_cast<char*>(om->om_data), om->om_len);
             om = SLIST_NEXT(om, om_next);
         }
@@ -81,7 +81,7 @@ static const struct ble_gatt_svc_def g_gatt_svcs[] = {
             },
             {
                 .uuid = &g_tx_uuid.u,
-                .access_cb = gatt_callback, // FIXED: Changed from nullptr to pass the runtime sanity checks
+                .access_cb = gatt_callback, 
                 .arg = nullptr,
                 .descriptors = nullptr,
                 .flags = BLE_GATT_CHR_F_NOTIFY,
@@ -115,11 +115,11 @@ static const struct ble_gatt_svc_def g_gatt_svcs[] = {
 static void ble_advertise() {
     struct ble_gap_adv_params adv_params;
     struct ble_hs_adv_fields fields;
-    memset(&fields, 0, sizeof(fields));
+    std::memset(&fields, 0, sizeof(fields));
     
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.name = (uint8_t *)"TALOS-01";
-    fields.name_len = strlen("TALOS-01");
+    fields.name_len = std::strlen("TALOS-01");
     fields.name_is_complete = 1;
 
     int rc = ble_gap_adv_set_fields(&fields);
@@ -128,11 +128,11 @@ static void ble_advertise() {
         return;
     }
 
-    memset(&adv_params, 0, sizeof(adv_params));
+    std::memset(&adv_params, 0, sizeof(adv_params));
     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
     adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
     
-    rc = ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER, &adv_params, ble_gap_event, NULL);
+    rc = ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, nullptr, BLE_HS_FOREVER, &adv_params, ble_gap_event, nullptr);
     if (rc != 0) {
         ESP_LOGE(TAG, "Error starting advertisement; rc=%d", rc);
     }
@@ -150,21 +150,18 @@ static void ble_on_sync(void) {
     ble_svc_gap_init();
     ble_svc_gap_device_name_set("TALOS-01");
 
-    // 1. Calculate required registration parameters safely
     int rc = ble_gatts_count_cfg(g_gatt_svcs);
     if (rc != 0) {
         ESP_LOGE(TAG, "GATT count config failed; rc=%d", rc);
         return;
     }
     
-    // 2. Map matrix descriptors into host registration context queues
     rc = ble_gatts_add_svcs(g_gatt_svcs);
     if (rc != 0) {
         ESP_LOGE(TAG, "GATT adding services failed; rc=%d", rc);
         return;
     }
 
-    // 3. Commit profiles cleanly to runtime memory
     rc = ble_gatts_start();
     if (rc != 0) {
         ESP_LOGE(TAG, "CRITICAL: Failed to execute ble_gatts_start(); rc=%d", rc);
@@ -175,7 +172,6 @@ static void ble_on_sync(void) {
     ble_advertise();
 }
 
-// GAP connection event routing callback
 static int ble_gap_event(struct ble_gap_event *event, void *arg) {
     if (event->type == BLE_GAP_EVENT_CONNECT) {
         if (event->connect.status == 0) {
@@ -192,9 +188,6 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
     return 0;
 }
 
-/**
- * @brief Host stack main execution thread wrapper task
- */
 static void ble_host_task(void *param) {
     ESP_LOGI(TAG, "[THREAD] FreeRTOS NimBLE port loop spinning up safely.");
     nimble_port_run();

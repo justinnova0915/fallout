@@ -13,7 +13,7 @@ InputManager::InputManager(const Config& config)
       pcf_device_handle_(nullptr),
       power_btn_pressed_(false), 
       pressed_key(0) 
-    {
+{
     initI2C();
 }
 
@@ -41,8 +41,8 @@ void InputManager::initI2C() {
 /**
  * @brief Reads the state of the macro pad
  * @details The PCF expander uses 8-bit quasi-bidirectional I/O pins, which means
- *          we have to pull all the pins high, wait for the input pins to pull 
- *          them low if they are active, then read the data from the board.
+ * we have to pull all the pins high, wait for the input pins to pull 
+ * them low if they are active, then read the data from the board.
  * @param pin_mask a bit mask of one byte, determining the mode of the pins (I/O)
  */
 uint8_t InputManager::readPCF(uint8_t pin_mask) {
@@ -57,18 +57,17 @@ uint8_t InputManager::readPCF(uint8_t pin_mask) {
  * @details A wrapper of readPCF
  */
 void InputManager::update() {
-
-    // power button check
+    // Power button check (Pin 6)
     uint8_t power_check_mask = 0xFF; 
     uint8_t base_read = readPCF(power_check_mask);
     power_btn_pressed_ = ((base_read & (1 << 6)) == 0);
 
     uint16_t detected_key = 0;
 
-    /*  pull rows low one by one, and check which cols are low
-        pin 0 - 2 C3-C1
-        Pin 3 - 5 R3-R1
-        pin 6 - power button */
+    /* Pull rows low one by one, and check which cols are low
+        Pin 0 - 2: C3-C1
+        Pin 3 - 5: R3-R1
+        Pin 6    : Power Button */
     for (int r = 0; r < 3; r++) {
         uint8_t write_mask = 0xFF & ~(1 << (5 - r));
         uint8_t read_val = readPCF(write_mask);
@@ -76,7 +75,6 @@ void InputManager::update() {
         for (int c = 0; c < 3; c++) {
             if ((read_val & (1 << (2 - c))) == 0) {
                 uint8_t key_index = (3 * r) + c;
-                
                 detected_key |= (1 << key_index);
             }
         }
