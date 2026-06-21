@@ -1,4 +1,5 @@
 // main/input.cpp
+#include <stdio.h>
 #include "input.hpp"
 #include "esp_log.h"
 

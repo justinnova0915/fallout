@@ -13,10 +13,6 @@
 
 static const char* TAG = "CAROUSEL_ENGINE";
 
-/**
- * @brief Initializes the display engine and boot layout for the carousel view.
- */
-
 // ============================================================================
 // EMBEDDED BINARY SYMBOLS DECLARATION
 // These symbols point directly to the embedded 1.jpg file in the program's flash memory segment.
@@ -200,7 +196,7 @@ void Screen::updateHardwarePositions(float ease_progress) {
         }
 
         moveDwinElementsPacked(ICON_SP_BASE + (i * ADDR_INCREMENT), dynamic_x, static_cast<uint16_t>(icon_y_calculated), false);
-
+        
         float text_x = static_cast<float>(dynamic_x) + 200.0f;
         float text_size_dots = 36.0f;
         if (state_ == State::IDLE && i == current_focus_idx_) {
@@ -230,7 +226,7 @@ void Screen::updateHardwarePositions(float ease_progress) {
             if (state_ == State::IDLE) {
                 if (i == current_focus_idx_) {
                     text_color = 0xFFE0; 
-                    font_size  = 0x7272; 
+                    font_size  = 0x4848; 
                 }
             } else if (state_ == State::MOVING) {
                 float calculated_weight = 0.0f;
@@ -282,7 +278,6 @@ void Screen::updateHardwarePositions(float ease_progress) {
     }
 }
 
-// Steps the carousel state machine and applies the next display frame.
 void Screen::update() {
     if (state_ == State::IDLE) {
         if (stride_balance_delta_ > 0) {
@@ -435,7 +430,6 @@ bool Screen::waitForDwinAck(uint32_t timeout_ms) {
     while (((esp_timer_get_time() / 1000) - start_time) < timeout_ms) {
         int len = uart_read_bytes(cfg_.uart_port, &rx_byte, 1, pdMS_TO_TICKS(2));
         if (len > 0) {
-            // Dump raw back-channel bytes sequentially
             printf("%02X ", (unsigned int)rx_byte); 
             fflush(stdout);
 
@@ -455,9 +449,6 @@ bool Screen::waitForDwinAck(uint32_t timeout_ms) {
 }
 
 bool Screen::sendJpegImageOnTheFly(const uint8_t* jpeg_data, size_t jpeg_size) {
-    // --- JPEG INTEGRITY SANITY CHECK ---
-    // Standard JPEGs MUST start with 0xFFD8 and end with 0xFFD9. If they don't, the compilation
-    // asset pipeline has corrupted the file structure or it's not a real image.
     if (jpeg_size < 4) {
         ESP_LOGE("CHECKPOINT", "[FATAL] Image payload is way too small to be a JPEG.");
         return false;
@@ -473,7 +464,6 @@ bool Screen::sendJpegImageOnTheFly(const uint8_t* jpeg_data, size_t jpeg_size) {
         ESP_LOGW("CHECKPOINT", "[WARNING] File does NOT end with a valid JPEG EOI footer! Decompressor will fail.");
     }
 
-    // --- STEP 2: STREAM JPEG DATA STARTING EXACTLY AT VP+2 (0x8002) ---
     uint16_t current_vp = 0x8002; 
     size_t bytes_sent = 0;
     const size_t CHUNK_SIZE = 240; 
@@ -481,31 +471,35 @@ bool Screen::sendJpegImageOnTheFly(const uint8_t* jpeg_data, size_t jpeg_size) {
 
     ESP_LOGI("CHECKPOINT", "[START] Total JPEG payload size to transmit: %u bytes", (unsigned int)jpeg_size);
     
-    // Flush input buffers clean
     uart_flush_input(cfg_.uart_port);
 
     while (bytes_sent < jpeg_size) {
         size_t remaining = jpeg_size - bytes_sent;
         size_t current_chunk_size = std::min(CHUNK_SIZE, remaining);
         
-        uint16_t dwin_packet_length = 3 + current_chunk_size;
+        uint8_t dwin_packet_length = 3 + current_chunk_size;
         bool pad_byte = (current_chunk_size % 2 != 0);
-        if (pad_byte) dwin_packet_length += 1;
+        if (pad_byte) {
+            dwin_packet_length += 1;
+        }
 
-        uint8_t* tx_buf = static_cast<uint8_t*>(malloc(4 + dwin_packet_length));
+        uint8_t* tx_buf = static_cast<uint8_t*>(malloc(3 + dwin_packet_length));
         if (tx_buf == nullptr) {
+            ESP_LOGE("CHECKPOINT", "[FATAL] Out of RAM allocation bounds for chunk array");
             return false;
         }
 
-        tx_buf[0] = 0x5A; tx_buf[1] = 0xA5;
-        tx_buf[2] = static_cast<uint8_t>((dwin_packet_length >> 8) & 0xFF);
-        tx_buf[3] = static_cast<uint8_t>(dwin_packet_length & 0xFF);
-        tx_buf[4] = 0x82; 
-        tx_buf[5] = static_cast<uint8_t>((current_vp >> 8) & 0xFF);
-        tx_buf[6] = static_cast<uint8_t>(current_vp & 0xFF);
+        tx_buf[0] = 0x5A; 
+        tx_buf[1] = 0xA5;
+        tx_buf[2] = dwin_packet_length; 
+        tx_buf[3] = 0x82;               
+        tx_buf[4] = static_cast<uint8_t>((current_vp >> 8) & 0xFF);
+        tx_buf[5] = static_cast<uint8_t>(current_vp & 0xFF);
 
-        std::memcpy(&tx_buf[7], &jpeg_data[bytes_sent], current_chunk_size);
-        if (pad_byte) tx_buf[7 + current_chunk_size] = 0x00;
+        std::memcpy(&tx_buf[6], &jpeg_data[bytes_sent], current_chunk_size);
+        if (pad_byte) {
+            tx_buf[6 + current_chunk_size] = 0x00;
+        }
 
         printf("[CHECKPOINT] Sending Chunk #%u (Address 0x%04X, Size %u): ", 
                (unsigned int)chunk_counter, 
@@ -513,13 +507,12 @@ bool Screen::sendJpegImageOnTheFly(const uint8_t* jpeg_data, size_t jpeg_size) {
                (unsigned int)current_chunk_size);
         fflush(stdout);
 
-        size_t total_packet_size = 4 + dwin_packet_length;
+        size_t total_packet_size = 3 + dwin_packet_length;
         uart_write_bytes(cfg_.uart_port, reinterpret_cast<const char*>(tx_buf), total_packet_size);
         free(tx_buf);
 
-        // Wait up to 100ms for screen response before sending next packet
         if (!waitForDwinAck(100)) {
-            ESP_LOGE("CHECKPOINT", "[FAIL] Screen dropped chunk #%u or rejected address! Aborting stream.", (unsigned int)chunk_counter);
+            ESP_LOGE("CHECKPOINT", "[FAIL] Screen dropped chunk #%u or rejected configuration address! Aborting stream.", (unsigned int)chunk_counter);
             return false; 
         }
 
@@ -532,30 +525,26 @@ bool Screen::sendJpegImageOnTheFly(const uint8_t* jpeg_data, size_t jpeg_size) {
     ESP_LOGI("CHECKPOINT", "[DATA SUCCESS] All file chunks acknowledged. Giving T5L core 50ms to settle cache memory...");
     vTaskDelay(pdMS_TO_TICKS(50));
 
-    // --- STEP 3: ACTIVATION TRIGGER PACKET AT VP (0x8000) ---
-    // Writes 0x5AA5 (Enable Function) to 0x8000
-    // Writes 0x8000 (Allocates full 64KB buffer limit) to 0x8001
-    uint8_t trigger_cmd[11] = {
-        0x5A, 0xA5, // Frame Header
-        0x07,       // Remaining Length
-        0x82,       // Write command
-        0x80, 0x00, // Target VP: 0x8000 (Your widget control address)
-        0x5A, 0xA5, // Open function flag written to 0x8000
-        0x80, 0x00  // Buffer allocation length parameter written to 0x8001 (64KB limits)
+    uint8_t trigger_cmd[10] = {
+        0x5A, 0xA5, 
+        0x07,       
+        0x82,       
+        0x80, 0x00, 
+        0x5A, 0xA5, 
+        0x80, 0x00  
     };
 
     printf("[CHECKPOINT] Blasting Activation Execution to Address 0x8000: ");
     fflush(stdout);
     
-    uart_write_bytes(cfg_.uart_port, reinterpret_cast<const char*>(trigger_cmd), 11);
+    uart_write_bytes(cfg_.uart_port, reinterpret_cast<const char*>(trigger_cmd), 10);
     
     if (!waitForDwinAck(100)) {
         ESP_LOGE("CHECKPOINT", "[FAIL] Screen rejected the final activation command token flag!");
         return false;
     }
 
-    ESP_LOGI("CHECKPOINT", "[COMPLETE] Pipeline completed cleanly. Giving screen decompressor 100ms processing window...");
-    vTaskDelay(pdMS_TO_TICKS(100));
+    ESP_LOGI("CHECKPOINT", "[COMPLETE] Pipeline completed cleanly without drops.");
     return true;
 }
 
@@ -563,9 +552,6 @@ bool Screen::sendJpegImageOnTheFly(const uint8_t* jpeg_data, size_t jpeg_size) {
 // Local Embedded Resource Handling Function
 // ============================================================================
 
-/**
- * @brief Loads the compiled JPEG asset and streams it to the DWIN panel.
- */
 void loadAndSendEmbeddedJpeg(Screen& carousel) {
     size_t image_size = (size_t)(image_end - image_start);
 

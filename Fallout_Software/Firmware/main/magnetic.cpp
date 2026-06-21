@@ -1,5 +1,6 @@
 // main/magnetic.cpp
 #include <stdio.h>
+#include <stdbool.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"

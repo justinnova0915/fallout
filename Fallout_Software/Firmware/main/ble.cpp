@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include <cstring>
+#include <stdio.h>
 
 // NimBLE Host & Controller Headers
 #include "nimble/nimble_port.h"
