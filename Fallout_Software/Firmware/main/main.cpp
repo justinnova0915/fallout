@@ -85,6 +85,8 @@ void update_dwin_workspace_apps(uart_port_t uart_port, int workspace_idx, const 
 }
 
 extern "C" void app_main(void) {
+    // Small baseline boot delay to ensure the DWIN hardware resets properly before greeting the serial lines
+    vTaskDelay(pdMS_TO_TICKS(500));
     ESP_LOGI(MAIN_TAG, "Starting");
 
     // Analog Digital Converter init
@@ -121,11 +123,44 @@ extern "C" void app_main(void) {
     uart_config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
     uart_config.source_clk = UART_SCLK_DEFAULT;
     ESP_ERROR_CHECK(uart_param_config(dwin_uart, &uart_config));
-    ESP_ERROR_CHECK(uart_set_pin(dwin_uart, 16, 17, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE)); 
+    
+    // RESTORED FIX: Match the exact physical connection pins (4 and 5) from your working verification setup!
+    ESP_ERROR_CHECK(uart_set_pin(dwin_uart, 4, 5, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE)); 
     ESP_ERROR_CHECK(uart_driver_install(dwin_uart, 1024, 8192, 0, nullptr, 0));
     
     static Screen carousel({.uart_port = dwin_uart, .step_duration_ms = 300});
     
+    // Load embedded asset backgrounds
+    loadAndSendEmbeddedJpeg(carousel);
+
+    // INLINE GUARANTEED STARTUP TEST SEQUENCE
+    ESP_LOGI(MAIN_TAG, "[BOOT TEST] Initiating workspace sliding sequence...");
+    vTaskDelay(pdMS_TO_TICKS(1000)); 
+    
+    // 1. Slide over to workspace 9
+    carousel.scrollToWorkspace(9);
+    for (int i = 0; i < 120; ++i) {
+        carousel.update();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    vTaskDelay(pdMS_TO_TICKS(1000)); 
+
+    // 2. Slide all the way left to workspace 1
+    carousel.scrollToWorkspace(1);
+    for (int i = 0; i < 240; ++i) {
+        carousel.update();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    vTaskDelay(pdMS_TO_TICKS(1000)); 
+
+    // 3. Return cleanly to the centered midpoint resting anchor
+    carousel.scrollToWorkspace(5);
+    for (int i = 0; i < 120; ++i) {
+        carousel.update();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    ESP_LOGI(MAIN_TAG, "[BOOT TEST] Sequence complete. Handing over control loops.");
+
     // Init other peripheral control objects
     static VoltMeter gauge({.gpio_pin = 14, .timer_sel = LEDC_TIMER_0, .channel_sel = LEDC_CHANNEL_0});
     static InputManager inputs({.sda_pin = 6, .scl_pin = 7, .pcf_address = 0x20});
@@ -198,15 +233,16 @@ extern "C" void app_main(void) {
                 int target_workspace = 1;
                 char apps_layout[256] = {0}; 
                 
-                int matched = std::sscanf(msg.c_str(), "WS_MAP:%d:%255s", &target_workspace, apps_layout);
+                int matched = std::sscanf(msg.c_str(), "WS_MAP:%d:%255[^:\n]", &target_workspace, apps_layout);
                 if (matched >= 1) {
-                    // Update layout slots directly via public UART port pass
-                    update_dwin_workspace_apps(dwin_uart, target_workspace, apps_layout);
-                    
-                    if (matched == 1 || ::strlen(apps_layout) > 0) {
-                         carousel.scrollToWorkspace(static_cast<uint8_t>(target_workspace));
-                         last_calculated_workspace = static_cast<uint8_t>(target_workspace);
+                    if (matched == 1) {
+                        update_dwin_workspace_apps(dwin_uart, target_workspace, "");
+                    } else {
+                        update_dwin_workspace_apps(dwin_uart, target_workspace, apps_layout);
                     }
+                    
+                    carousel.scrollToWorkspace(static_cast<uint8_t>(target_workspace));
+                    last_calculated_workspace = static_cast<uint8_t>(target_workspace);
                 }
             }
         }
