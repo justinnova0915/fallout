@@ -16,17 +16,15 @@ import (
 
 var adapter = bluetooth.DefaultAdapter
 
-// Match your exact compiled 128-bit UUIDs from ble.cpp
 const (
-	ServiceUUID      = "12345678-1234-1234-1234-1234567890ab" // Base service
-	RxCharacteristic = "12345678-1234-1234-1234-1234567890ac" // PC Writes to this (ESP32 RX)
-	TxCharacteristic = "12345678-1234-1234-1234-1234567890ad" // PC Listens to this (ESP32 TX)
+	ServiceUUID      = "12345678-1234-1234-1234-1234567890ab"
+	RxCharacteristic = "12345678-1234-1234-1234-1234567890ac"
+	TxCharacteristic = "12345678-1234-1234-1234-1234567890ad"
 
-	mmPerWorkspace = 8.0 // 8mm of physical stride per virtual workspace step
-	maxWorkspaces  = 10  // Total workspace limits
+	mmPerWorkspace = 8.0
+	maxWorkspaces  = 10
 )
 
-// Hyprland JSON IPC Structural Definitions
 type HyprClient struct {
 	Class     string `json:"class"`
 	Workspace struct {
@@ -39,27 +37,17 @@ type HyprActiveWorkspace struct {
 }
 
 func main() {
-	// DYNAMIC ADAPTER DETECTION PROFILE
-	// Attempt to turn on default hci0 adapter node
 	err := adapter.Enable()
 	if err != nil && (strings.Contains(err.Error(), "does not exist") || strings.Contains(err.Error(), "no such file")) {
-		log.Println("[WARN] Default interface hci0 is unallocated. Falling back to laptop radio hci1 configuration slot...")
-
-		// Re-target the TinyGo runtime engine to process using the hci1 system socket block
-		if err != nil {
-			log.Fatalf("[FATAL] Could not establish DBus communication pipeline to hardware address space hci1: %v", err)
-		}
-
-		// Attempt to turn on the updated interface configuration
+		log.Println("[WARN] Default interface hci0 is unallocated. Falling back to hci1 slot...")
 		must(adapter.Enable())
 	} else if err != nil {
-		log.Fatalf("[FATAL] Bluetooth hardware framework failed state initialization: %v", err)
+		log.Fatalf("[FATAL] Bluetooth framework failed initialization: %v", err)
 	}
 
 	log.Println("[INIT] Scanning for Endfield Command Strip (TALOS-01)...")
-	var targetDevice bluetooth.ScanResult
+	var targetDevice = bluetooth.ScanResult{}
 
-	// Scan until we discover the broadcast name configured in your BLE driver
 	ch := make(chan bluetooth.ScanResult, 1)
 	err = adapter.Scan(func(adapter *bluetooth.Adapter, result bluetooth.ScanResult) {
 		if result.LocalName() == "TALOS-01" {
@@ -77,15 +65,13 @@ func main() {
 	defer device.Disconnect()
 
 	log.Println("[GATT] Discovering device service attributes map...")
-	// Pass nil to pull the raw, unfiltered attribute table straight from BlueZ DBus cache
 	services, err := device.DiscoverServices(nil)
 	must(err)
 
 	if len(services) == 0 {
-		log.Fatalf("[FATAL] Zero GATT services reported by remote peripheral container.")
+		log.Fatalf("[FATAL] Zero GATT services reported by remote container.")
 	}
 
-	// Loop through and isolate your custom Endfield Service using case-insensitive validation
 	var endfieldService bluetooth.DeviceService
 	foundService := false
 	for _, svc := range services {
@@ -97,14 +83,9 @@ func main() {
 	}
 
 	if !foundService {
-		log.Println("[DEBUG] Exposed services on your device:")
-		for _, svc := range services {
-			log.Printf("  -> Found Service UUID: %s", svc.UUID().String())
-		}
 		log.Fatalf("[FATAL] Service matching target ID %s was not found.", ServiceUUID)
 	}
 
-	// Fetch all characteristic layout descriptors safely under the matching service node
 	chars, err := endfieldService.DiscoverCharacteristics(nil)
 	must(err)
 
@@ -123,24 +104,99 @@ func main() {
 	}
 
 	if !hasRx || !hasTx {
-		log.Fatalf("[FATAL] Pipeline broken. Missing critical endpoints. RX Found: %t | TX Found: %t", hasRx, hasTx)
+		log.Fatalf("[FATAL] Missing critical endpoints. RX: %t | TX: %t", hasRx, hasTx)
 	}
 
 	log.Println("[CONNECTED] Wireless BLE data channels fully synced and operational.")
 
-	// Thread 1: Outbound PC Performance Telemetry (Engine to Voltmeter / Widgets)
 	go startWirelessTelemetry(rxChar)
-
-	// Thread 2: Outbound Hyprland Window Mapper (Engine to DWIN Matrix Layout)
 	go startWirelessHyprlandState(rxChar)
+	go startWirelessTimeSync(rxChar)
+	go startWirelessDateSync(rxChar)
+	go startWirelessWeatherSync(rxChar)
 
-	// Thread 3 / Main: Inbound Event Handler (Listens for incoming notifications from ESP32)
 	startWirelessInboundPipeline(txChar)
 }
 
-// ============================================================================
-// 1. OUTBOUND: TELEMETRY PIPELINE (CPU & RAM)
-// ============================================================================
+func startWirelessTimeSync(rxChar bluetooth.DeviceCharacteristic) {
+	for {
+		now := time.Now()
+		msg := fmt.Sprintf("TIME:%02d:%02d\n", now.Hour(), now.Minute())
+		log.Printf("[OUTBOUND] Syncing system time parameters: %02d:%02d", now.Hour(), now.Minute())
+		rxChar.WriteWithoutResponse([]byte(msg))
+		time.Sleep(60 * time.Second)
+	}
+}
+
+func startWirelessDateSync(rxChar bluetooth.DeviceCharacteristic) {
+	for {
+		now := time.Now()
+		// CRITICAL FIX: Explicitly cast now.Month() to int so it formats as numeric digits!
+		msg := fmt.Sprintf("DATE:%04d:%02d:%02d\n", now.Year(), int(now.Month()), now.Day())
+		log.Printf("[OUTBOUND] Syncing calendar date configuration: %04d-%02d-%02d", now.Year(), int(now.Month()), now.Day())
+		rxChar.WriteWithoutResponse([]byte(msg))
+		time.Sleep(24 * time.Hour)
+	}
+}
+
+func startWirelessWeatherSync(rxChar bluetooth.DeviceCharacteristic) {
+	for {
+		// Scrape condition text (%C) and numeric temp (%t) separately with metric sizing flag
+		out, err := exec.Command("curl", "-s", "wttr.in?format=%C:%t&m").Output()
+		if err == nil {
+			payload := strings.TrimSpace(string(out))
+			if len(payload) > 0 && !strings.Contains(payload, "Error") {
+				parts := strings.Split(payload, ":")
+				if len(parts) == 2 {
+					condition := strings.ToLower(strings.TrimSpace(parts[0]))
+					tempRaw := strings.TrimSpace(parts[1])
+
+					// Parse numerical temp to match requirements: remove signs/units
+					tempRaw = strings.ReplaceAll(tempRaw, "+", "")
+					tempRaw = strings.ReplaceAll(tempRaw, "C", "")
+					tempRaw = strings.ReplaceAll(tempRaw, "°", "")
+					tempStr := strings.TrimSpace(tempRaw)
+
+					// Default condition token frame mapping (0: partly sunny baseline)
+					iconIdx := 0
+
+					// Pattern matching maps text summaries to asset lookup tables
+					if strings.Contains(condition, "thunderstorm") {
+						iconIdx = 3
+					} else if strings.Contains(condition, "rain") || strings.Contains(condition, "drizzle") || strings.Contains(condition, "shower") {
+						iconIdx = 1
+					} else if strings.Contains(condition, "snow") || strings.Contains(condition, "flurry") || strings.Contains(condition, "ice") {
+						iconIdx = 4
+					} else if strings.Contains(condition, "wind") || strings.Contains(condition, "gale") {
+						iconIdx = 5
+					} else if strings.Contains(condition, "sunny") || strings.Contains(condition, "clear") {
+						// Determine day/night context matching if clear
+						hour := time.Now().Hour()
+						if hour >= 19 || hour < 6 {
+							iconIdx = 6 // Night asset index configuration choice
+						} else {
+							iconIdx = 2 // Sunny daytime profile allocation index
+						}
+					} else if strings.Contains(condition, "cloud") || strings.Contains(condition, "overcast") || strings.Contains(condition, "mist") || strings.Contains(condition, "fog") {
+						iconIdx = 0 // Partly sunny / cloudy indicator choice layout register
+					}
+
+					// Blast numerical temp layout string
+					tempMsg := fmt.Sprintf("WEATHER:%s\n", tempStr)
+					rxChar.WriteWithoutResponse([]byte(tempMsg))
+
+					// Blast structured icon register value
+					iconMsg := fmt.Sprintf("W_ICON:%d\n", iconIdx)
+					rxChar.WriteWithoutResponse([]byte(iconMsg))
+
+					log.Printf("[OUTBOUND WEATHER] Temp Raw Value: %s | Condition Matched: '%s' -> Display Icon Index: %d", tempStr, condition, iconIdx)
+				}
+			}
+		}
+		time.Sleep(60 * time.Second)
+	}
+}
+
 func startWirelessTelemetry(rxChar bluetooth.DeviceCharacteristic) {
 	for {
 		cpuUsage := 0.0
@@ -155,23 +211,15 @@ func startWirelessTelemetry(rxChar bluetooth.DeviceCharacteristic) {
 			ramUsage = vmStat.UsedPercent
 		}
 
-		// Pack stats into a string format matching your main.cpp sscanf tracker
 		msg := fmt.Sprintf("STATS:CPU:%.1f:RAM:%.1f\n", cpuUsage, ramUsage)
 		_, err = rxChar.WriteWithoutResponse([]byte(msg))
-		if err != nil {
-			log.Printf("[ERR] Telemetry drop; transmission failure: %v", err)
-		}
-
 		time.Sleep(1 * time.Second)
 	}
 }
 
-// ============================================================================
-// 2. OUTBOUND: HYPRLAND STATE SYNC PIPELINE (Descriptive App Mapping)
-// ============================================================================
 func startWirelessHyprlandState(rxChar bluetooth.DeviceCharacteristic) {
+	var lastSentStr string
 	for {
-		// 1. Fetch active workspace ID
 		activeWS := 1
 		wsData, err := exec.Command("hyprctl", "activeworkspace", "-j").Output()
 		if err == nil {
@@ -181,7 +229,6 @@ func startWirelessHyprlandState(rxChar bluetooth.DeviceCharacteristic) {
 			}
 		}
 
-		// 2. Fetch open windows AND their application class names
 		clientData, err := exec.Command("hyprctl", "clients", "-j").Output()
 		workspaceApps := make(map[int][]string)
 
@@ -200,7 +247,6 @@ func startWirelessHyprlandState(rxChar bluetooth.DeviceCharacteristic) {
 			}
 		}
 
-		// 3. Serialize the map into a compact layout token format: WS=APP,APP;WS=APP...
 		var mappingPairs []string
 		for wsID := 1; wsID <= maxWorkspaces; wsID++ {
 			if apps, exists := workspaceApps[wsID]; exists {
@@ -213,32 +259,30 @@ func startWirelessHyprlandState(rxChar bluetooth.DeviceCharacteristic) {
 			appsLayoutStr = "NONE"
 		}
 
-		// 4. Stream layout packet down to update your DWIN display widgets
 		msg := fmt.Sprintf("WS_MAP:%d:%s\n", activeWS, appsLayoutStr)
-		_, err = rxChar.WriteWithoutResponse([]byte(msg))
-		if err != nil {
-			log.Printf("[ERR] Layout state drop; transmission failure: %v", err)
+
+		if msg != lastSentStr {
+			log.Printf("[OUTBOUND] Matrix Viewport Shift -> Active WS: %d | Layouts: %s", activeWS, appsLayoutStr)
+			lastSentStr = msg
 		}
 
+		_, err = rxChar.WriteWithoutResponse([]byte(msg))
 		time.Sleep(250 * time.Millisecond)
 	}
 }
 
-// ============================================================================
-// 3. INBOUND: INCOMING NOTIFICATION PIPELINE
-// ============================================================================
 func startWirelessInboundPipeline(txChar bluetooth.DeviceCharacteristic) {
 	lastWorkspaceID := -1
 	isGrabActive := false
 
-	// Subscribes directly to your ESP32's notification event trigger
 	err := txChar.EnableNotifications(func(buf []byte) {
 		line := strings.TrimSpace(string(buf))
 		if len(line) == 0 {
 			return
 		}
 
-		// Match Slider Tracking Data
+		log.Printf("[INBOUND INTERCEPT] Received Frame -> %s", line)
+
 		if strings.HasPrefix(line, "CMD:FADER:") {
 			var currentMM float64
 			var grabFlag string
@@ -256,62 +300,51 @@ func startWirelessInboundPipeline(txChar bluetooth.DeviceCharacteristic) {
 				}
 
 				if targetWorkspaceID != lastWorkspaceID {
+					log.Printf("[INBOUND EVAL] Fader moved. Requesting active workspace change to: %d", targetWorkspaceID)
 					executeWorkspaceAction(targetWorkspaceID, isGrabActive)
 					lastWorkspaceID = targetWorkspaceID
 				}
 			}
 		}
 
-		// Match Left Wing Macro Combo Pad Bitmask Reads
 		if strings.HasPrefix(line, "CMD:MACRO:") {
 			var bitmask int
 			if _, err := fmt.Sscanf(line, "CMD:MACRO:%d", &bitmask); err == nil {
+				log.Printf("[INBOUND EVAL] Chord key hit detected. Register mask: 0x%02X", bitmask)
 				executeMacroBitmask(bitmask)
 			}
 		}
 
-		// Match Power Button Intercepts
 		if line == "CMD:POWER_PRESS" {
-			log.Println("[ACTION] Power Interrupt received. Activating lock screen layout...")
+			log.Println("[INBOUND ACTION] Power button clicked. Engaging swaylock desktop safety layout...")
 			exec.Command("swaylock").Start()
 		}
 	})
 	must(err)
-
-	// Keep background threads active and running
 	select {}
 }
 
-// ============================================================================
-// 4. DESKTOP SUBSYSTEM DISPATCHERS
-// ============================================================================
 func executeWorkspaceAction(workspaceID int, grabWindow bool) {
 	wsString := fmt.Sprintf("%d", workspaceID)
-
 	if grabWindow {
-		log.Printf("[HYPRLAND] DRAG WINDOW: Displacing focus window stack container into Workspace %d", workspaceID)
 		exec.Command("hyprctl", "dispatch", "movetoworkspace", wsString).Run()
 	} else {
-		log.Printf("[HYPRLAND] NAVIGATE: Dispatches current system view to Workspace %d", workspaceID)
 		exec.Command("hyprctl", "dispatch", "workspace", wsString).Run()
 	}
 }
 
 func executeMacroBitmask(bitmask int) {
-	log.Printf("[MACROPAD] Processing key state mapping configuration chord: 0x%04X", bitmask)
-
-	if bitmask&(1<<0) != 0 { // Key 1
+	if bitmask&(1<<0) != 0 {
 		exec.Command("kitty").Start()
 	}
-	if bitmask&(1<<1) != 0 { // Key 2
+	if bitmask&(1<<1) != 0 {
 		exec.Command("rofi", "-show", "drun").Start()
 	}
-	if bitmask&(1<<2) != 0 { // Key 3
+	if bitmask&(1<<2) != 0 {
 		exec.Command("grimshot", "save", "area").Start()
 	}
 }
 
-// Simple panic handler for clean initialization checks
 func must(err error) {
 	if err != nil {
 		panic(err)

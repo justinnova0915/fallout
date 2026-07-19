@@ -13,41 +13,33 @@
 
 static const char* TAG = "CAROUSEL_ENGINE";
 
-// ============================================================================
-// EMBEDDED BINARY SYMBOLS DECLARATION
-// These symbols point directly to the embedded 1.jpg file in the program's flash memory segment.
-// ============================================================================
 extern "C" {
     extern const uint8_t image_start[] asm("_binary_1_jpg_start");
     extern const uint8_t image_end[]   asm("_binary_1_jpg_end");
 }
 
-// ============================================================================
-// Class Implementation
-// ============================================================================
-
 static constexpr uint16_t ADDR_INCREMENT = 0x0100;
 static constexpr uint16_t ICON_SP_BASE   = 0x3000;
 static constexpr uint16_t ICON_VP_BASE   = 0x4000;
 static constexpr uint16_t TEXT_SP_BASE   = 0x5000;
-static constexpr uint16_t TEXT_VP_BASE   = 0x2000; // Text content baseline address register 
+static constexpr uint16_t TEXT_VP_BASE   = 0x2000; 
 
 static constexpr uint16_t COLOR_YELLOW   = 0xFFE0; 
 static constexpr uint16_t COLOR_BLACK    = 0x0000; 
 
-static constexpr uint16_t SIZE_PACKED_REST   = 0x2424; // X=36, Y=36
-static constexpr uint16_t SIZE_PACKED_ACTIVE = 0x4848; // X=72, Y=72
+static constexpr uint16_t SIZE_PACKED_REST   = 0x2424; 
+static constexpr uint16_t SIZE_PACKED_ACTIVE = 0x4848; 
 
 Screen::Screen(const Config& config)
     : cfg_(config),
       state_(State::IDLE),
-      current_focus_idx_(4),       // System starts centered naturally on Element 4
+      current_focus_idx_(4),       
       target_step_idx_(4),
       ultimate_target_idx_(4),
       stride_balance_delta_(0),    
-      current_global_pos_(4),      // INIT floor tracker
-      queued_workspace_(4),        // INIT queue tracker
-      is_floor_move_(false),       // INIT floor lock
+      current_global_pos_(4),      
+      queued_workspace_(4),        
+      is_floor_move_(false),       
       g_local_slide_x(0.0f),
       shifting_right_(false),
       starting_x_(10.0f),
@@ -62,29 +54,23 @@ Screen::Screen(const Config& config)
 
     for (int i = 0; i < 10; ++i) {
         last_sent_frames_[i] = 0xFFFF;
-        text_values_[i] = i+1; // Baseline initialization
+        text_values_[i] = i+1; 
     }
 
-    // Clean boot sweep layout initialization sequence
     for (int i = 0; i < 10; ++i) {
         uint16_t init_frame = (i == current_focus_idx_) ? 7 : 0;
         last_sent_frames_[i] = init_frame;
         sendDwinWriteSingle(ICON_VP_BASE + (i * ADDR_INCREMENT), init_frame);
-        
-        // Force ALL text elements to initialize strictly as black on system boot
         sendDwinWriteSingle(TEXT_SP_BASE + (i * ADDR_INCREMENT) + 3, COLOR_BLACK);
 
-        // Force ALL text components down to standard rest layout sizing (36x36 dots) at boot
         uint16_t init_size = (i == current_focus_idx_) ? 0x4848 : 0x2424;
         sendDwinWriteSingle(TEXT_SP_BASE + (i * ADDR_INCREMENT) + 0x0A, init_size);
 
-        // Formatting with brackets here on boot init using the dedicated tracker
         char str_buf[8];
         snprintf(str_buf, sizeof(str_buf), "[%d]", text_values_[i]);
         sendDwinString(TEXT_VP_BASE + (i * ADDR_INCREMENT), str_buf);
     }
 
-    // Pre-populate hardware location defaults safely
     updateHardwarePositions(0.0f);
     ESP_LOGI(TAG, "Dynamic Relay Multi-Stride Engine loaded. Anchored on Index [%d]", current_focus_idx_);
 }
@@ -134,7 +120,7 @@ void Screen::updateHardwarePositions(float ease_progress) {
         float split_offset = 0.0f;
 
         if (state_ == State::MOVING) {
-            if (!shifting_right_) { // SWIPE LEFT (Moving Forward)
+            if (!shifting_right_) { 
                 if (i < current_focus_idx_) {
                     split_offset = -CUSHION_PADDING;
                 } else if (i > target_step_idx_) {
@@ -144,7 +130,7 @@ void Screen::updateHardwarePositions(float ease_progress) {
                 } else if (i == target_step_idx_) {
                     split_offset = CUSHION_PADDING * (1.0f - ease_progress); 
                 }
-            } else { // SWIPE RIGHT (Moving Backward)
+            } else { 
                 if (i < target_step_idx_) {
                     split_offset = -CUSHION_PADDING;
                 } else if (i > current_focus_idx_) {
@@ -172,7 +158,6 @@ void Screen::updateHardwarePositions(float ease_progress) {
 
         uint16_t dynamic_x = static_cast<uint16_t>(slot_x + split_offset + active_slide_x);
 
-        // --- PART 2: DYNAMIC INDEPENDENT Y-AXIS CALCULATIONS ---
         float icon_y_calculated = static_cast<float>(FORCED_Y_BASELINE);
         float text_y_calculated = static_cast<float>(FORCED_Y_BASELINE + REST_TEXT_Y_OFFSET);
 
@@ -290,17 +275,25 @@ void Screen::update() {
             current_global_pos_--;
             is_floor_move_ = (current_global_pos_ < 4); 
             swipeRight(); 
-        } else {
-            // CRITICAL UART SATURATION SOLVED: 
-            // Do NOT call updateHardwarePositions(0.0f) inside IDLE. 
-            // It floods the serial bus with ~480 bytes every 10ms with redundant coordinates.
         }
         return;
     }
 
     if (state_ == State::MOVING) {
         int64_t elapsed_ms = (esp_timer_get_time() - transition_start_time_us_) / 1000;
-        float progress = static_cast<float>(elapsed_ms) / static_cast<float>(cfg_.step_duration_ms);
+        
+        // ============================================================================
+        // DYNAMIC ACCELERATION GEARBOX FIX
+        // Dynamically scales down the frame processing duration for multi-step runs
+        // ============================================================================
+        uint32_t dynamic_duration_ms = cfg_.step_duration_ms;
+        if (std::abs(stride_balance_delta_) >= 2) {
+            dynamic_duration_ms = 80;  // High-speed skip frames for large jumps
+        } else if (std::abs(stride_balance_delta_) == 1) {
+            dynamic_duration_ms = 140; // Mid-speed skip frames
+        }
+
+        float progress = static_cast<float>(elapsed_ms) / static_cast<float>(dynamic_duration_ms);
 
         if (progress >= 1.0f) {
             g_local_slide_x = 0.0f; 
@@ -416,27 +409,18 @@ void Screen::moveDwinElementsPacked(uint16_t base_sp_address, uint16_t dynamic_x
     }
 }
 
-// ============================================================================
-// CHECKPOINT DEBUG ENGINE IMPLEMENTATION
-// ============================================================================
-
 bool Screen::waitForDwinAck(uint32_t timeout_ms) {
     uint8_t rx_byte;
-    uint8_t match_seq[6] = {0x5A, 0xA5, 0x03, 0x82, 0x4F, 0x4B}; // "5A A5 03 82 OK"
+    uint8_t match_seq[6] = {0x5A, 0xA5, 0x03, 0x82, 0x4F, 0x4B}; 
     size_t match_idx = 0;
-    
     int64_t start_time = esp_timer_get_time() / 1000;
     
     while (((esp_timer_get_time() / 1000) - start_time) < timeout_ms) {
         int len = uart_read_bytes(cfg_.uart_port, &rx_byte, 1, pdMS_TO_TICKS(2));
         if (len > 0) {
-            printf("%02X ", (unsigned int)rx_byte); 
-            fflush(stdout);
-
             if (rx_byte == match_seq[match_idx]) {
                 match_idx++;
                 if (match_idx == 6) {
-                    printf(" -> [MATCH ACK OK]\n");
                     return true;
                 }
             } else {
@@ -444,33 +428,17 @@ bool Screen::waitForDwinAck(uint32_t timeout_ms) {
             }
         }
     }
-    printf(" -> [TIMEOUT ERROR]\n");
     return false;
 }
 
 bool Screen::sendJpegImageOnTheFly(const uint8_t* jpeg_data, size_t jpeg_size) {
-    if (jpeg_size < 4) {
-        ESP_LOGE("CHECKPOINT", "[FATAL] Image payload is way too small to be a JPEG.");
-        return false;
-    }
-    
-    ESP_LOGI("CHECKPOINT", "JPEG Header Signature: %02X %02X (Expected: FF D8)", jpeg_data[0], jpeg_data[1]);
-    ESP_LOGI("CHECKPOINT", "JPEG Footer Signature: %02X %02X (Expected: FF D9)", jpeg_data[jpeg_size - 2], jpeg_data[jpeg_size - 1]);
-    
-    if (jpeg_data[0] != 0xFF || jpeg_data[1] != 0xD8) {
-        ESP_LOGW("CHECKPOINT", "[WARNING] File does NOT begin with a valid JPEG SOI header! Decompressor will fail.");
-    }
-    if (jpeg_data[jpeg_size - 2] != 0xFF || jpeg_data[jpeg_size - 1] != 0xD9) {
-        ESP_LOGW("CHECKPOINT", "[WARNING] File does NOT end with a valid JPEG EOI footer! Decompressor will fail.");
-    }
+    if (jpeg_size < 4) return false;
 
     uint16_t current_vp = 0x8002; 
     size_t bytes_sent = 0;
     const size_t CHUNK_SIZE = 240; 
     uint32_t chunk_counter = 0;
 
-    ESP_LOGI("CHECKPOINT", "[START] Total JPEG payload size to transmit: %u bytes", (unsigned int)jpeg_size);
-    
     uart_flush_input(cfg_.uart_port);
 
     while (bytes_sent < jpeg_size) {
@@ -479,42 +447,22 @@ bool Screen::sendJpegImageOnTheFly(const uint8_t* jpeg_data, size_t jpeg_size) {
         
         uint8_t dwin_packet_length = 3 + current_chunk_size;
         bool pad_byte = (current_chunk_size % 2 != 0);
-        if (pad_byte) {
-            dwin_packet_length += 1;
-        }
+        if (pad_byte) dwin_packet_length += 1;
 
         uint8_t* tx_buf = static_cast<uint8_t*>(malloc(3 + dwin_packet_length));
-        if (tx_buf == nullptr) {
-            ESP_LOGE("CHECKPOINT", "[FATAL] Out of RAM allocation bounds for chunk array");
-            return false;
-        }
+        if (tx_buf == nullptr) return false;
 
-        tx_buf[0] = 0x5A; 
-        tx_buf[1] = 0xA5;
-        tx_buf[2] = dwin_packet_length; 
-        tx_buf[3] = 0x82;               
+        tx_buf[0] = 0x5A; tx_buf[1] = 0xA5; tx_buf[2] = dwin_packet_length; tx_buf[3] = 0x82;               
         tx_buf[4] = static_cast<uint8_t>((current_vp >> 8) & 0xFF);
         tx_buf[5] = static_cast<uint8_t>(current_vp & 0xFF);
 
         std::memcpy(&tx_buf[6], &jpeg_data[bytes_sent], current_chunk_size);
-        if (pad_byte) {
-            tx_buf[6 + current_chunk_size] = 0x00;
-        }
+        if (pad_byte) tx_buf[6 + current_chunk_size] = 0x00;
 
-        printf("[CHECKPOINT] Sending Chunk #%u (Address 0x%04X, Size %u): ", 
-               (unsigned int)chunk_counter, 
-               (unsigned int)current_vp, 
-               (unsigned int)current_chunk_size);
-        fflush(stdout);
-
-        size_t total_packet_size = 3 + dwin_packet_length;
-        uart_write_bytes(cfg_.uart_port, reinterpret_cast<const char*>(tx_buf), total_packet_size);
+        uart_write_bytes(cfg_.uart_port, reinterpret_cast<const char*>(tx_buf), 3 + dwin_packet_length);
         free(tx_buf);
 
-        if (!waitForDwinAck(100)) {
-            ESP_LOGE("CHECKPOINT", "[FAIL] Screen dropped chunk #%u or rejected configuration address! Aborting stream.", (unsigned int)chunk_counter);
-            return false; 
-        }
+        if (!waitForDwinAck(100)) return false; 
 
         bytes_sent += current_chunk_size;
         uint16_t words_sent = (current_chunk_size + (pad_byte ? 1 : 0)) / 2;
@@ -522,46 +470,15 @@ bool Screen::sendJpegImageOnTheFly(const uint8_t* jpeg_data, size_t jpeg_size) {
         chunk_counter++;
     }
 
-    ESP_LOGI("CHECKPOINT", "[DATA SUCCESS] All file chunks acknowledged. Giving T5L core 50ms to settle cache memory...");
     vTaskDelay(pdMS_TO_TICKS(50));
-
-    uint8_t trigger_cmd[10] = {
-        0x5A, 0xA5, 
-        0x07,       
-        0x82,       
-        0x80, 0x00, 
-        0x5A, 0xA5, 
-        0x80, 0x00  
-    };
-
-    printf("[CHECKPOINT] Blasting Activation Execution to Address 0x8000: ");
-    fflush(stdout);
-    
+    uint8_t trigger_cmd[10] = { 0x5A, 0xA5, 0x07, 0x82, 0x80, 0x00, 0x5A, 0xA5, 0x80, 0x00 };
     uart_write_bytes(cfg_.uart_port, reinterpret_cast<const char*>(trigger_cmd), 10);
     
-    if (!waitForDwinAck(100)) {
-        ESP_LOGE("CHECKPOINT", "[FAIL] Screen rejected the final activation command token flag!");
-        return false;
-    }
-
-    ESP_LOGI("CHECKPOINT", "[COMPLETE] Pipeline completed cleanly without drops.");
-    return true;
+    return waitForDwinAck(100);
 }
-
-// ============================================================================
-// Local Embedded Resource Handling Function
-// ============================================================================
 
 void loadAndSendEmbeddedJpeg(Screen& carousel) {
     size_t image_size = (size_t)(image_end - image_start);
-
-    if (image_size <= 0) {
-        ESP_LOGE("CHECKPOINT", "[FATAL] Embedded program resource image has a null size allocation");
-        return;
-    }
-
-    ESP_LOGI("CHECKPOINT", "Flash-mapped embedded JPEG asset detected successfully.");
-    ESP_LOGI("CHECKPOINT", "Size: %u bytes. Initializing communication pipeline...", (unsigned int)image_size);
-
+    if (image_size <= 0) return;
     carousel.sendJpegImageOnTheFly(image_start, image_size);
 }
