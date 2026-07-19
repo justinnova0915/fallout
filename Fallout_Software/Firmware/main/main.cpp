@@ -24,41 +24,43 @@ static const char* MAIN_TAG = "FALLOUT_MAIN";
 // Workspace physical boundary mapping configuration
 static constexpr float MM_PER_WORKSPACE = 8.0f; 
 
+// MATCHED EXACT VP ADDRESSES FROM YOUR DGUS CONFIGURATION
+static constexpr uint16_t TIME_TEXT_VP    = 0x3F00;
+static constexpr uint16_t DATE_TEXT_VP    = 0x6800;
+static constexpr uint16_t WEATHER_TEXT_VP = 0x6900;
+
 /**
- * @brief Parses a comma/semicolon separated list of apps and updates the corresponding DWIN text variable slot.
+ * @brief Helper string buffer router to send raw text strings over to DWIN registers directly
  */
+void send_dwin_raw_string(uart_port_t uart_port, uint16_t address, const char* str) {
+    uint8_t len = ::strlen(str);
+    uint8_t buffer[128];
+    buffer[0] = 0x5A;
+    buffer[1] = 0xA5;
+    buffer[2] = len + 3; 
+    buffer[3] = 0x82;
+    buffer[4] = static_cast<uint8_t>((address >> 8) & 0xFF);
+    buffer[5] = static_cast<uint8_t>(address & 0xFF);
+    ::memcpy(&buffer[6], str, len);
+    
+    if (len % 2 != 0) {
+        buffer[6 + len] = 0x00;
+        buffer[2]++;
+        uart_write_bytes(uart_port, reinterpret_cast<const char*>(buffer), 7 + len);
+    } else {
+        uart_write_bytes(uart_port, reinterpret_cast<const char*>(buffer), 6 + len);
+    }
+}
+
 void update_dwin_workspace_apps(uart_port_t uart_port, int workspace_idx, const char* apps_list) {
     if (workspace_idx < 1 || workspace_idx > 10) return;
 
-    // Address for text content corresponding to this specific workspace slot
     uint16_t target_text_vp = 0x2000 + ((workspace_idx - 1) * 0x0100);
 
-    // Local string buffer lambda to send UART data straight to DWIN without hitting Screen's private methods
-    auto send_raw_dwin_string = [uart_port](uint16_t address, const char* str) {
-        uint8_t len = ::strlen(str);
-        uint8_t buffer[128];
-        buffer[0] = 0x5A;
-        buffer[1] = 0xA5;
-        buffer[2] = len + 3; 
-        buffer[3] = 0x82;
-        buffer[4] = static_cast<uint8_t>((address >> 8) & 0xFF);
-        buffer[5] = static_cast<uint8_t>(address & 0xFF);
-        ::memcpy(&buffer[6], str, len);
-        
-        if (len % 2 != 0) {
-            buffer[6 + len] = 0x00;
-            buffer[2]++;
-            uart_write_bytes(uart_port, reinterpret_cast<const char*>(buffer), 7 + len);
-        } else {
-            uart_write_bytes(uart_port, reinterpret_cast<const char*>(buffer), 6 + len);
-        }
-    };
-
-    // If string layout is missing or empty, clear the register slot
     if (apps_list == nullptr || ::strlen(apps_list) == 0 || ::strcmp(apps_list, "EMPTY") == 0 || ::strcmp(apps_list, "none") == 0) {
         char final_label[16];
         std::snprintf(final_label, sizeof(final_label), "[%d]", workspace_idx);
-        send_raw_dwin_string(target_text_vp, final_label);
+        send_dwin_raw_string(uart_port, target_text_vp, final_label);
         return;
     }
 
@@ -81,11 +83,10 @@ void update_dwin_workspace_apps(uart_port_t uart_port, int workspace_idx, const 
 
     char final_label[64];
     std::snprintf(final_label, sizeof(final_label), "[%d] %s", workspace_idx, render_buf);
-    send_raw_dwin_string(target_text_vp, final_label);
+    send_dwin_raw_string(uart_port, target_text_vp, final_label);
 }
 
 extern "C" void app_main(void) {
-    // Small baseline boot delay to ensure the DWIN hardware resets properly before greeting the serial lines
     vTaskDelay(pdMS_TO_TICKS(500));
     ESP_LOGI(MAIN_TAG, "Starting");
 
@@ -124,7 +125,7 @@ extern "C" void app_main(void) {
     uart_config.source_clk = UART_SCLK_DEFAULT;
     ESP_ERROR_CHECK(uart_param_config(dwin_uart, &uart_config));
     
-    // RESTORED FIX: Match the exact physical connection pins (4 and 5) from your working verification setup!
+    // Physical connection pins 4 and 5
     ESP_ERROR_CHECK(uart_set_pin(dwin_uart, 4, 5, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE)); 
     ESP_ERROR_CHECK(uart_driver_install(dwin_uart, 1024, 8192, 0, nullptr, 0));
     
@@ -133,33 +134,17 @@ extern "C" void app_main(void) {
     // Load embedded asset backgrounds
     loadAndSendEmbeddedJpeg(carousel);
 
-    // INLINE GUARANTEED STARTUP TEST SEQUENCE
+    // INLINE STARTUP SLIDE ANIMATION SEQUENCE
     ESP_LOGI(MAIN_TAG, "[BOOT TEST] Initiating workspace sliding sequence...");
     vTaskDelay(pdMS_TO_TICKS(1000)); 
-    
-    // 1. Slide over to workspace 9
     carousel.scrollToWorkspace(9);
-    for (int i = 0; i < 120; ++i) {
-        carousel.update();
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
+    for (int i = 0; i < 120; ++i) { carousel.update(); vTaskDelay(pdMS_TO_TICKS(10)); }
     vTaskDelay(pdMS_TO_TICKS(1000)); 
-
-    // 2. Slide all the way left to workspace 1
     carousel.scrollToWorkspace(1);
-    for (int i = 0; i < 240; ++i) {
-        carousel.update();
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
+    for (int i = 0; i < 240; ++i) { carousel.update(); vTaskDelay(pdMS_TO_TICKS(10)); }
     vTaskDelay(pdMS_TO_TICKS(1000)); 
-
-    // 3. Return cleanly to the centered midpoint resting anchor
     carousel.scrollToWorkspace(5);
-    for (int i = 0; i < 120; ++i) {
-        carousel.update();
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-    ESP_LOGI(MAIN_TAG, "[BOOT TEST] Sequence complete. Handing over control loops.");
+    for (int i = 0; i < 120; ++i) { carousel.update(); vTaskDelay(pdMS_TO_TICKS(10)); }
 
     // Init other peripheral control objects
     static VoltMeter gauge({.gpio_pin = 14, .timer_sel = LEDC_TIMER_0, .channel_sel = LEDC_CHANNEL_0});
@@ -228,7 +213,32 @@ extern "C" void app_main(void) {
                     gauge.setVoltage(target_voltage);
                 }
             }
-            // Token B: Arch Hyprland Matrix Updates
+            // Token B: Time Capture Handler -> Outputs to VP 0x3F00
+            else if (msg.rfind("TIME:", 0) == 0) {
+                int hour = 0, minute = 0;
+                if (std::sscanf(msg.c_str(), "TIME:%d:%d", &hour, &minute) == 2) {
+                    char time_label[16];
+                    std::snprintf(time_label, sizeof(time_label), "%02d:%02d", hour, minute);
+                    send_dwin_raw_string(dwin_uart, TIME_TEXT_VP, time_label);
+                }
+            }
+            // Token C: Date Capture Handler -> Outputs to VP 0x6800
+            else if (msg.rfind("DATE:", 0) == 0) {
+                int year = 0, month = 0, day = 0;
+                if (std::sscanf(msg.c_str(), "DATE:%d:%d:%d", &year, &month, &day) == 2) {
+                    char date_label[24];
+                    std::snprintf(date_label, sizeof(date_label), "%04d-%02d-%02d", year, month, day);
+                    send_dwin_raw_string(dwin_uart, DATE_TEXT_VP, date_label);
+                }
+            }
+            // Token D: Weather Capture Handler -> Outputs to VP 0x6900
+            else if (msg.rfind("WEATHER:", 0) == 0) {
+                char weather_layout[64] = {0};
+                if (std::sscanf(msg.c_str(), "WEATHER:%63[^\n]", weather_layout) == 1) {
+                    send_dwin_raw_string(dwin_uart, WEATHER_TEXT_VP, weather_layout);
+                }
+            }
+            // Token E: Arch Hyprland Matrix Updates
             else if (msg.rfind("WS_MAP:", 0) == 0) {
                 int target_workspace = 1;
                 char apps_layout[256] = {0}; 
