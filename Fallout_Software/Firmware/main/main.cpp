@@ -60,16 +60,11 @@ void send_dwin_raw_string(uart_port_t uart_port, uint16_t address, const char* s
     }
 }
 
-/**
- * @brief Restored back to your clean default: writes ONLY the workspace index number
- */
 void update_dwin_workspace_apps(uart_port_t uart_port, int workspace_idx, const char* apps_list) {
     if (workspace_idx < 1 || workspace_idx > 10) return;
 
-    // Target the text content baseline address register (0x2000 baseline)
     uint16_t target_text_vp = 0x2000 + ((workspace_idx - 1) * 0x0100);
 
-    // Stripped out all app parsing logic. Keep it strictly to the raw bracketed numbers.
     char final_label[16];
     std::snprintf(final_label, sizeof(final_label), "[%d]", workspace_idx);
     send_dwin_raw_string(uart_port, target_text_vp, final_label);
@@ -162,7 +157,6 @@ extern "C" void app_main(void) {
         if (target_ws < 1)  target_ws = 1;
         if (target_ws > 10) target_ws = 10;
 
-        // Dynamic Release: Only clear the PC override lock once the fader matches the workspace target layout
         if (pc_override_lock && target_ws == target_pc_workspace) {
             pc_override_lock = false;
             last_calculated_workspace = static_cast<uint8_t>(target_ws);
@@ -211,26 +205,33 @@ extern "C" void app_main(void) {
                 if (std::sscanf(msg.c_str(), "TIME:%d:%d", &hour, &minute) == 2) {
                     char time_label[16];
                     std::snprintf(time_label, sizeof(time_label), "%02d:%02d", hour, minute);
+                    
+                    ESP_LOGI(MAIN_TAG, "[BLE INBOUND] Received Time Sync: %s", time_label);
                     send_dwin_raw_string(dwin_uart, TIME_TEXT_VP, time_label);
                 }
             }
             else if (msg.rfind("DATE:", 0) == 0) {
                 int year = 0, month = 0, day = 0;
-                if (std::sscanf(msg.c_str(), "DATE:%d:%d:%d", &year, &month, &day) == 2) {
+                // CRITICAL FIXED MATCH CONDITION: Evaluates matching 3 elements cleanly
+                if (std::sscanf(msg.c_str(), "DATE:%d:%d:%d", &year, &month, &day) == 3) {
                     char date_label[24];
                     std::snprintf(date_label, sizeof(date_label), "%04d-%02d-%02d", year, month, day);
+                    
+                    ESP_LOGI(MAIN_TAG, "[BLE INBOUND] Received Date Sync: %s", date_label);
                     send_dwin_raw_string(dwin_uart, DATE_TEXT_VP, date_label);
                 }
             }
             else if (msg.rfind("WEATHER:", 0) == 0) {
                 char weather_layout[64] = {0};
                 if (std::sscanf(msg.c_str(), "WEATHER:%63[^\n]", weather_layout) == 1) {
+                    ESP_LOGI(MAIN_TAG, "[BLE INBOUND] Received Temperature: %s", weather_layout);
                     send_dwin_raw_string(dwin_uart, WEATHER_TEXT_VP, weather_layout);
                 }
             }
             else if (msg.rfind("W_ICON:", 0) == 0) {
                 int parsed_icon = 0;
                 if (std::sscanf(msg.c_str(), "W_ICON:%d", &parsed_icon) == 1) {
+                    ESP_LOGI(MAIN_TAG, "[BLE INBOUND] Received Weather Icon Index: %d", parsed_icon);
                     send_dwin_raw_int(dwin_uart, WEATHER_ICON_VP, static_cast<uint16_t>(parsed_icon));
                 }
             }
@@ -240,7 +241,6 @@ extern "C" void app_main(void) {
                 
                 int matched = std::sscanf(msg.c_str(), "WS_MAP:%d:%255[^:\n]", &target_workspace, apps_layout);
                 if (matched >= 1) {
-                    // This call will now safely reset/maintain just the clean [X] label space
                     update_dwin_workspace_apps(dwin_uart, target_workspace, "");
                     
                     if (static_cast<uint8_t>(target_workspace) != target_pc_workspace) {

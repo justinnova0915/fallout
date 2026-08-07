@@ -11,14 +11,15 @@
 #include "host/ble_hs.h"
 #include "services/gap/ble_svc_gap.h"
 
+// CRITICAL PERSISTENCE HEADERS
+#include "store/config/ble_store_config.h"
+
 static const char* TAG = "BLE_DRV";
 
-// Buffer for storing inbound data
 static std::string s_rx_buffer = "";
 static uint16_t s_conn_handle = 0;
 static uint16_t s_tx_char_handle = 0;
 
-// Bluetooth custom 128-bit layout identifiers 
 static const ble_uuid128_t g_svc_uuid = 
     BLE_UUID128_INIT(0xab, 0x90, 0x78, 0x56, 0x34, 0x12, 0x34, 0x12, 0x34, 0x12, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
 static const ble_uuid128_t g_rx_uuid = 
@@ -29,16 +30,10 @@ static const ble_uuid128_t g_tx_uuid =
 static int ble_gap_event(struct ble_gap_event *event, void *arg);
 static void ble_advertise();
 
-/**
- * @brief NimBLE stack reset lifecycle callback
- */
 static void ble_on_reset(int reason) {
     ESP_LOGW(TAG, "Resetting BLE host stack; reason=%d", reason);
 }
 
-/**
- * @brief Custom local GATT registration tracking callback
- */
 static void ble_on_gatt_register(struct ble_gatt_register_ctxt *ctxt, void *arg) {
     if (ctxt->op == BLE_GATT_REGISTER_OP_SVC) {
         ESP_LOGI(TAG, "[GATT_REG] Exposing Service Handle: %d", ctxt->svc.handle);
@@ -48,9 +43,6 @@ static void ble_on_gatt_register(struct ble_gatt_register_ctxt *ctxt, void *arg)
     }
 }
 
-/**
- * @brief GATT service inbound packet write parser callback 
- */ 
 static int gatt_callback(uint16_t conn_handle, uint16_t attr_handle, struct ble_gatt_access_ctxt *ctxt, void *arg) {
     if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
         struct os_mbuf *om = ctxt->om;
@@ -63,7 +55,6 @@ static int gatt_callback(uint16_t conn_handle, uint16_t attr_handle, struct ble_
     return BLE_ATT_ERR_UNLIKELY;
 }
 
-// GATT service definitions data matrix with absolute inline array declarations
 static const struct ble_gatt_svc_def g_gatt_svcs[] = {
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
@@ -110,9 +101,6 @@ static const struct ble_gatt_svc_def g_gatt_svcs[] = {
     }
 };
 
-/**
- * @brief Broadcasts out GAP fields to initiate wireless discovery
- */
 static void ble_advertise() {
     struct ble_gap_adv_params adv_params;
     struct ble_hs_adv_fields fields;
@@ -139,9 +127,6 @@ static void ble_advertise() {
     }
 }
 
-/**
- * @brief Core Radio Hardware Synchronization Handler
- */
 static void ble_on_sync(void) {
     ESP_LOGI(TAG, "[SYNC] Radio hardware locked. Loading configuration profiles...");
 
@@ -174,17 +159,49 @@ static void ble_on_sync(void) {
 }
 
 static int ble_gap_event(struct ble_gap_event *event, void *arg) {
-    if (event->type == BLE_GAP_EVENT_CONNECT) {
-        if (event->connect.status == 0) {
-            s_conn_handle = event->connect.conn_handle;
-            ESP_LOGI(TAG, "Connected to Host Daemon");
-        } else {
+    struct ble_gap_conn_desc desc;
+    int rc;
+
+    switch (event->type) {
+        case BLE_GAP_EVENT_CONNECT:
+            if (event->connect.status == 0) {
+                s_conn_handle = event->connect.conn_handle;
+                ESP_LOGI(TAG, "Connected to Host Daemon. Handle: %d", s_conn_handle);
+                
+                // FIXED FUNCTION NAME CALL
+                ble_gap_security_initiate(s_conn_handle);
+            } else {
+                ble_advertise();
+            }
+            break;
+
+        case BLE_GAP_EVENT_DISCONNECT:
+            s_conn_handle = 0;
+            ESP_LOGW(TAG, "Disconnected from Host Daemon; reason=%d", event->disconnect.reason);
             ble_advertise();
-        }
-    } else if (event->type == BLE_GAP_EVENT_DISCONNECT) {
-        s_conn_handle = 0;
-        ESP_LOGW(TAG, "Disconnected from Host Daemon");
-        ble_advertise();
+            break;
+
+        case BLE_GAP_EVENT_ENC_CHANGE:
+            if (event->enc_change.status == 0) {
+                rc = ble_gap_conn_find(event->enc_change.conn_handle, &desc);
+                if (rc == 0) {
+                    ESP_LOGI(TAG, "Encryption status changed; encrypted=%d authenticated=%d bonded=%d",
+                             desc.sec_state.encrypted, desc.sec_state.authenticated, desc.sec_state.bonded);
+                }
+            } else {
+                ESP_LOGE(TAG, "Encryption change failed; status=%d", event->enc_change.status);
+            }
+            break;
+
+        case BLE_GAP_EVENT_REPEAT_PAIRING:
+            rc = ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc);
+            if (rc == 0) {
+                ble_store_util_delete_peer(&desc.peer_id_addr);
+            }
+            return BLE_GAP_REPEAT_PAIRING_RETRY;
+
+        default:
+            break;
     }
     return 0;
 }
@@ -217,8 +234,20 @@ void BluetoothManager::initBluetoothStack() {
     ble_hs_cfg.reset_cb = ble_on_reset;
     ble_hs_cfg.gatts_register_cb = ble_on_gatt_register;
 
+    // MANDATORY SECURITY PARAMETERS
+    ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT; 
+    ble_hs_cfg.sm_bonding = 1;                        
+    ble_hs_cfg.sm_mitm = 0;
+    ble_hs_cfg.sm_sc = 1;                             
+    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+
+    // FIXED BINDING: Binds the callbacks straight to the store configuration tables
+    ble_hs_cfg.store_read_cb = ble_store_config_read;
+    ble_hs_cfg.store_write_cb = ble_store_config_write;
+
     nimble_port_freertos_init(ble_host_task);
-    ESP_LOGI(TAG, "[SUCCESS] Background radio pipeline mounted securely.");
+    ESP_LOGI(TAG, "[SUCCESS] Background radio pipeline mounted with explicit storage bindings.");
 }
 
 void BluetoothManager::writeString(const std::string& str) {
