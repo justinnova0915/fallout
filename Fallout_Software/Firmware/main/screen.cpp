@@ -135,7 +135,8 @@ void Screen::updateHardwarePositions(float ease_progress) {
     update_ticker_++;
     bool allow_property_update = (state_ == State::IDLE) || (update_ticker_ % 3 == 0);
 
-    bool is_fully_settled = (state_ == State::IDLE) && (stride_balance_delta_ == 0);
+    float current_focus_x = 0.0f, current_focus_y = 0.0f;
+    float target_focus_x = 0.0f, target_focus_y = 0.0f;
 
     for (uint16_t i = 0; i < 10; ++i) {
         float slot_x = static_cast<float>(uniform_slots_x_[i]);
@@ -204,43 +205,16 @@ void Screen::updateHardwarePositions(float ease_progress) {
 
         moveDwinElementsPacked(ICON_SP_BASE + (i * ADDR_INCREMENT), dynamic_x, static_cast<uint16_t>(icon_y_calculated), false);
 
-        // ============================================================================
-        // APP ICON DEFERRED FRAME & POSITION SWAPPER
-        // ============================================================================
+        // Capture coordinates of current and target slots for app icon movement
         if (i == current_focus_idx_) {
-            if (!is_fully_settled) {
-                // 1. CAROUSEL IN MOTION:
-                // Hide off-screen instantly
-                moveDwinElementsPacked(APP_ICON_SP, 0x7FFF, 0x7FFF, false);
-
-                // Update VP frame while hidden off-screen
-                if (app_icon_needs_update_ || last_sent_app_icon_id_ != pending_app_icon_id_) {
-                    sendDwinWriteSingle(APP_ICON_VP, pending_app_icon_id_);
-                    last_sent_app_icon_id_ = pending_app_icon_id_;
-                    app_icon_needs_update_ = false;
-                }
-            } else {
-                // 2. CAROUSEL SETTLED AT FINAL DESTINATION:
-                // If an icon update arrived while sitting still, hide -> change frame -> unhide
-                if (app_icon_needs_update_ || last_sent_app_icon_id_ != pending_app_icon_id_) {
-                    moveDwinElementsPacked(APP_ICON_SP, 0x7FFF, 0x7FFF, false);
-                    vTaskDelay(pdMS_TO_TICKS(5000));
-
-                    sendDwinWriteSingle(APP_ICON_VP, pending_app_icon_id_);
-                    last_sent_app_icon_id_ = pending_app_icon_id_;
-                    app_icon_needs_update_ = false;
-                }
-
-                int32_t final_x = static_cast<int32_t>(dynamic_x) + APP_ICON_OFFSET_X;
-                int32_t final_y = static_cast<int32_t>(icon_y_calculated) + APP_ICON_OFFSET_Y;
-
-                if (final_x < 0) final_x = 0;
-                if (final_y < 0) final_y = 0;
-
-                moveDwinElementsPacked(APP_ICON_SP, static_cast<uint16_t>(final_x), static_cast<uint16_t>(final_y), false);
-            }
+            current_focus_x = static_cast<float>(dynamic_x);
+            current_focus_y = icon_y_calculated;
         }
-        
+        if (i == target_step_idx_) {
+            target_focus_x = static_cast<float>(dynamic_x);
+            target_focus_y = icon_y_calculated;
+        }
+
         float text_x = static_cast<float>(dynamic_x) + 200.0f;
         float text_size_dots = 36.0f;
         if (state_ == State::IDLE && i == current_focus_idx_) {
@@ -314,6 +288,36 @@ void Screen::updateHardwarePositions(float ease_progress) {
             sendDwinWriteSingle(ICON_VP_BASE + (i * ADDR_INCREMENT), target_frame);
         }
     }
+
+    // ============================================================================
+    // SMOOTH ANIMATED APP ICON POSITION & FRAME UPDATE
+    // ============================================================================
+    // Update VP frame instantly when pending
+    if (app_icon_needs_update_ || last_sent_app_icon_id_ != pending_app_icon_id_) {
+        sendDwinWriteSingle(APP_ICON_VP, pending_app_icon_id_);
+        last_sent_app_icon_id_ = pending_app_icon_id_;
+        app_icon_needs_update_ = false;
+    }
+
+    float animated_app_x = 0.0f;
+    float animated_app_y = 0.0f;
+
+    if (state_ == State::IDLE) {
+        animated_app_x = current_focus_x;
+        animated_app_y = current_focus_y;
+    } else {
+        // Interpolate continuously using ease_progress curve
+        animated_app_x = (1.0f - ease_progress) * current_focus_x + ease_progress * target_focus_x;
+        animated_app_y = (1.0f - ease_progress) * current_focus_y + ease_progress * target_focus_y;
+    }
+
+    int32_t final_app_x = static_cast<int32_t>(animated_app_x) + APP_ICON_OFFSET_X;
+    int32_t final_app_y = static_cast<int32_t>(animated_app_y) + APP_ICON_OFFSET_Y;
+
+    if (final_app_x < 0) final_app_x = 0;
+    if (final_app_y < 0) final_app_y = 0;
+
+    moveDwinElementsPacked(APP_ICON_SP, static_cast<uint16_t>(final_app_x), static_cast<uint16_t>(final_app_y), false);
 
     uint32_t now = esp_timer_get_time() / 1000;
     if (now - last_log_time_ms_ >= 50) {

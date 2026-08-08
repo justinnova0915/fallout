@@ -2,7 +2,6 @@
 #include <cstdio>
 #include <cstring>  
 #include <cmath>
-#include <cctype>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_adc/adc_oneshot.h"
@@ -31,40 +30,13 @@ static constexpr uint16_t DATE_TEXT_VP     = 0x6800;
 static constexpr uint16_t WEATHER_TEXT_VP  = 0x6900;
 static constexpr uint16_t WEATHER_ICON_VP  = 0x5F00;
 
-// APP ICON POINTER LAYOUT ADDRESSES
-static constexpr uint16_t APP_ICON_SP      = 0x6A00;
+// APP ICON POINTER LAYOUT ADDRESS
 static constexpr uint16_t APP_ICON_VP      = 0x6B00;
 
-/**
- * @brief Maps an incoming Hyprland window class name to a DWIN icon frame ID (1 to 7).
- * Frame Order:
- * 1: Chrome, 2: Dolphin, 3: Firefox, 4: Kitty, 5: Spotify, 6: VS Code, 7: YT Music.
- * Defaults to Frame 4 (Kitty) if unmatched.
- */
-uint16_t get_icon_id_for_app(const char* app_class) {
-    if (app_class == nullptr || ::strlen(app_class) == 0) {
-        return 4; // Default to Kitty (Frame 4)
-    }
-
-    char lower_app[64] = {0};
-    size_t len = ::strlen(app_class);
-    if (len >= sizeof(lower_app)) len = sizeof(lower_app) - 1;
-    for (size_t i = 0; i < len; ++i) {
-        lower_app[i] = static_cast<char>(::tolower(static_cast<unsigned char>(app_class[i])));
-    }
-
-    if (::strstr(lower_app, "chrome") != nullptr)   return 0;
-    if (::strstr(lower_app, "dolphin") != nullptr)  return 1;
-    if (::strstr(lower_app, "firefox") != nullptr)  return 2;
-    if (::strstr(lower_app, "kitty") != nullptr)    return 3;
-    if (::strstr(lower_app, "spotify") != nullptr)  return 4;
-    if (::strstr(lower_app, "code") != nullptr || 
-        ::strstr(lower_app, "vscode") != nullptr)   return 5;
-    if (::strstr(lower_app, "music") != nullptr || 
-        ::strstr(lower_app, "youtube") != nullptr)  return 6;
-
-    return 3; // Default fallback to Kitty (Frame 4)
-}
+// MPRIS MUSIC POINTER LAYOUT ADDRESSES
+static constexpr uint16_t MUSIC_TITLE_VP   = 0x7000;
+static constexpr uint16_t MUSIC_ARTIST_VP  = 0x7100;
+static constexpr uint16_t MUSIC_STATUS_VP  = 0x7200;
 
 void send_dwin_raw_int(uart_port_t uart_port, uint16_t address, uint16_t value) {
     uint8_t buffer[8];
@@ -144,7 +116,7 @@ extern "C" void app_main(void) {
     
     ESP_ERROR_CHECK(uart_set_pin(dwin_uart, 4, 5, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
     ESP_ERROR_CHECK(uart_driver_install(dwin_uart, 1024, 8192, 0, nullptr, 0));
-
+    
     static Screen carousel({.uart_port = dwin_uart, .step_duration_ms = 300});
     
     loadAndSendEmbeddedJpeg(carousel);
@@ -161,9 +133,8 @@ extern "C" void app_main(void) {
     carousel.scrollToWorkspace(5);
     for (int i = 0; i < 120; ++i) { carousel.update(); vTaskDelay(pdMS_TO_TICKS(10)); }
 
-    // SET INITIAL DEFAULT APP ICON (Frame 4 = Kitty) AFTER BOOT LOAD FINISHES
+    // Set initial icon frame on boot (4 = Kitty)
     send_dwin_raw_int(dwin_uart, APP_ICON_VP, 4);
-
 
     static VoltMeter gauge({.gpio_pin = 14, .timer_sel = LEDC_TIMER_0, .channel_sel = LEDC_CHANNEL_0});
     static InputManager inputs({.sda_pin = 6, .scl_pin = 7, .pcf_address = 0x20});
@@ -267,6 +238,13 @@ extern "C" void app_main(void) {
                     send_dwin_raw_string(dwin_uart, WEATHER_TEXT_VP, weather_layout);
                 }
             }
+            else if (msg.rfind("W_ICON:", 0) == 0) {
+                int parsed_icon = 0;
+                if (std::sscanf(msg.c_str(), "W_ICON:%d", &parsed_icon) == 1) {
+                    ESP_LOGI(MAIN_TAG, "[BLE INBOUND] Received Weather Icon Index: %d", parsed_icon);
+                    send_dwin_raw_int(dwin_uart, WEATHER_ICON_VP, static_cast<uint16_t>(parsed_icon));
+                }
+            }
             else if (msg.rfind("APP_ICON:", 0) == 0) {
                 int parsed_icon = 0;
                 if (std::sscanf(msg.c_str(), "APP_ICON:%d", &parsed_icon) == 1) {
@@ -274,35 +252,25 @@ extern "C" void app_main(void) {
                     carousel.setAppIcon(static_cast<uint16_t>(parsed_icon));
                 }
             }
+            else if (msg.rfind("MUSIC:", 0) == 0) {
+                char status[16] = {0};
+                char artist[64] = {0};
+                char title[64] = {0};
+
+                if (std::sscanf(msg.c_str(), "MUSIC:%15[^:]:%63[^:]:%63[^\r\n]", status, artist, title) == 3) {
+                    ESP_LOGI(MAIN_TAG, "[BLE INBOUND MUSIC] [%s] %s - %s", status, artist, title);
+
+                    send_dwin_raw_string(dwin_uart, MUSIC_TITLE_VP, title);
+                    send_dwin_raw_string(dwin_uart, MUSIC_ARTIST_VP, artist);
+                    send_dwin_raw_string(dwin_uart, MUSIC_STATUS_VP, status);
+                }
+            }
             else if (msg.rfind("WS_MAP:", 0) == 0) {
                 int target_workspace = 1;
                 char apps_layout[256] = {0}; 
                 
-                if (std::sscanf(msg.c_str(), "WS_MAP:%d:%255[^\r\n]", &target_workspace, apps_layout) >= 1) {
-                    char current_active_app[64] = {0};
-                    
-                    // Match prefix for target workspace (e.g. "1=")
-                    char ws_prefix[16];
-                    std::snprintf(ws_prefix, sizeof(ws_prefix), "%d=", target_workspace);
-                    
-                    const char* match = std::strstr(apps_layout, ws_prefix);
-                    if (match != nullptr) {
-                        match += std::strlen(ws_prefix);
-                        size_t idx = 0;
-                        while (*match != '\0' && *match != ',' && *match != ';' && *match != '\r' && *match != '\n' && idx < sizeof(current_active_app) - 1) {
-                            current_active_app[idx++] = *match++;
-                        }
-                        current_active_app[idx] = '\0';
-                    }
-
-                    uint16_t icon_id = get_icon_id_for_app(current_active_app);
-                    
-                    // Directly write frame ID to APP_ICON_VP (0x6B00)
-                    send_dwin_raw_int(dwin_uart, APP_ICON_VP, icon_id);
-
-                    ESP_LOGI(MAIN_TAG, "[APP MATCH] WS %d -> App: '%s' -> Frame ID: %d (VP 0x6B00)", 
-                             target_workspace, (current_active_app[0] ? current_active_app : "kitty (default)"), icon_id);
-
+                int matched = std::sscanf(msg.c_str(), "WS_MAP:%d:%255[^:\n]", &target_workspace, apps_layout);
+                if (matched >= 1) {
                     update_dwin_workspace_apps(dwin_uart, target_workspace, "");
                     
                     if (static_cast<uint8_t>(target_workspace) != target_pc_workspace) {

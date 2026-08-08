@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -34,6 +35,37 @@ type HyprClient struct {
 
 type HyprActiveWorkspace struct {
 	ID int `json:"id"`
+}
+
+/**
+ * Maps app class names to icon frame IDs (1 to 7).
+ * 1: Chrome, 2: Dolphin, 3: Firefox, 4: Kitty, 5: Spotify, 6: VS Code, 7: YT Music.
+ * Fallback = 4 (Kitty)
+ */
+func getAppIconID(appName string) int {
+	appName = strings.ToLower(appName)
+	if strings.Contains(appName, "chrome") {
+		return 1
+	}
+	if strings.Contains(appName, "dolphin") {
+		return 2
+	}
+	if strings.Contains(appName, "firefox") {
+		return 3
+	}
+	if strings.Contains(appName, "kitty") {
+		return 4
+	}
+	if strings.Contains(appName, "spotify") {
+		return 5
+	}
+	if strings.Contains(appName, "code") || strings.Contains(appName, "vscode") {
+		return 6
+	}
+	if strings.Contains(appName, "music") || strings.Contains(appName, "youtube") {
+		return 7
+	}
+	return 4 // Default: Kitty
 }
 
 func main() {
@@ -114,6 +146,7 @@ func main() {
 	go startWirelessTimeSync(rxChar)
 	go startWirelessDateSync(rxChar)
 	go startWirelessWeatherSync(rxChar)
+	go startWirelessMPRISPipeline(rxChar)
 
 	startWirelessInboundPipeline(txChar)
 }
@@ -131,7 +164,6 @@ func startWirelessTimeSync(rxChar bluetooth.DeviceCharacteristic) {
 func startWirelessDateSync(rxChar bluetooth.DeviceCharacteristic) {
 	for {
 		now := time.Now()
-		// CRITICAL FIX: Explicitly cast now.Month() to int so it formats as numeric digits!
 		msg := fmt.Sprintf("DATE:%04d:%02d:%02d\n", now.Year(), int(now.Month()), now.Day())
 		log.Printf("[OUTBOUND] Syncing calendar date configuration: %04d-%02d-%02d", now.Year(), int(now.Month()), now.Day())
 		rxChar.WriteWithoutResponse([]byte(msg))
@@ -141,7 +173,6 @@ func startWirelessDateSync(rxChar bluetooth.DeviceCharacteristic) {
 
 func startWirelessWeatherSync(rxChar bluetooth.DeviceCharacteristic) {
 	for {
-		// Scrape condition text (%C) and numeric temp (%t) separately with metric sizing flag
 		out, err := exec.Command("curl", "-s", "wttr.in?format=%C:%t&m").Output()
 		if err == nil {
 			payload := strings.TrimSpace(string(out))
@@ -151,16 +182,13 @@ func startWirelessWeatherSync(rxChar bluetooth.DeviceCharacteristic) {
 					condition := strings.ToLower(strings.TrimSpace(parts[0]))
 					tempRaw := strings.TrimSpace(parts[1])
 
-					// Parse numerical temp to match requirements: remove signs/units
 					tempRaw = strings.ReplaceAll(tempRaw, "+", "")
 					tempRaw = strings.ReplaceAll(tempRaw, "C", "")
 					tempRaw = strings.ReplaceAll(tempRaw, "°", "")
 					tempStr := strings.TrimSpace(tempRaw)
 
-					// Default condition token frame mapping (0: partly sunny baseline)
 					iconIdx := 0
 
-					// Pattern matching maps text summaries to asset lookup tables
 					if strings.Contains(condition, "thunderstorm") {
 						iconIdx = 3
 					} else if strings.Contains(condition, "rain") || strings.Contains(condition, "drizzle") || strings.Contains(condition, "shower") {
@@ -170,22 +198,19 @@ func startWirelessWeatherSync(rxChar bluetooth.DeviceCharacteristic) {
 					} else if strings.Contains(condition, "wind") || strings.Contains(condition, "gale") {
 						iconIdx = 5
 					} else if strings.Contains(condition, "sunny") || strings.Contains(condition, "clear") {
-						// Determine day/night context matching if clear
 						hour := time.Now().Hour()
 						if hour >= 19 || hour < 6 {
-							iconIdx = 6 // Night asset index configuration choice
+							iconIdx = 6
 						} else {
-							iconIdx = 2 // Sunny daytime profile allocation index
+							iconIdx = 2
 						}
 					} else if strings.Contains(condition, "cloud") || strings.Contains(condition, "overcast") || strings.Contains(condition, "mist") || strings.Contains(condition, "fog") {
-						iconIdx = 0 // Partly sunny / cloudy indicator choice layout register
+						iconIdx = 0
 					}
 
-					// Blast numerical temp layout string
 					tempMsg := fmt.Sprintf("WEATHER:%s\n", tempStr)
 					rxChar.WriteWithoutResponse([]byte(tempMsg))
 
-					// Blast structured icon register value
 					iconMsg := fmt.Sprintf("W_ICON:%d\n", iconIdx)
 					rxChar.WriteWithoutResponse([]byte(iconMsg))
 
@@ -219,6 +244,8 @@ func startWirelessTelemetry(rxChar bluetooth.DeviceCharacteristic) {
 
 func startWirelessHyprlandState(rxChar bluetooth.DeviceCharacteristic) {
 	var lastSentStr string
+	var lastAppIconID int = -1
+
 	for {
 		activeWS := 1
 		wsData, err := exec.Command("hyprctl", "activeworkspace", "-j").Output()
@@ -247,6 +274,21 @@ func startWirelessHyprlandState(rxChar bluetooth.DeviceCharacteristic) {
 			}
 		}
 
+		// Determine active application on current workspace
+		var activeAppName string
+		if apps, exists := workspaceApps[activeWS]; exists && len(apps) > 0 {
+			activeAppName = apps[0]
+		}
+
+		// Update and transmit app icon frame index
+		appIconID := getAppIconID(activeAppName)
+		if appIconID != lastAppIconID {
+			iconMsg := fmt.Sprintf("APP_ICON:%d\n", appIconID)
+			rxChar.WriteWithoutResponse([]byte(iconMsg))
+			log.Printf("[OUTBOUND APP ICON] Active WS: %d | App: '%s' -> Frame ID: %d", activeWS, activeAppName, appIconID)
+			lastAppIconID = appIconID
+		}
+
 		var mappingPairs []string
 		for wsID := 1; wsID <= maxWorkspaces; wsID++ {
 			if apps, exists := workspaceApps[wsID]; exists {
@@ -268,6 +310,49 @@ func startWirelessHyprlandState(rxChar bluetooth.DeviceCharacteristic) {
 
 		_, err = rxChar.WriteWithoutResponse([]byte(msg))
 		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+func startWirelessMPRISPipeline(rxChar bluetooth.DeviceCharacteristic) {
+	cmd := exec.Command("playerctl", "metadata", "--format", "{{status}}|{{artist}}|{{title}}", "--follow")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		log.Printf("[MPRIS ERROR] Failed to attach stdout pipe: %v", err)
+		return
+	}
+
+	if err := cmd.Start(); err != nil {
+		log.Printf("[MPRIS ERROR] playerctl execution failed (ensure playerctl is installed): %v", err)
+		return
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	var lastPayload string
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || line == lastPayload {
+			continue
+		}
+		lastPayload = line
+
+		parts := strings.Split(line, "|")
+		if len(parts) >= 3 {
+			status := parts[0]
+			artist := parts[1]
+			title := parts[2]
+
+			if len(title) > 30 {
+				title = title[:27] + "..."
+			}
+			if len(artist) > 30 {
+				artist = artist[:27] + "..."
+			}
+
+			msg := fmt.Sprintf("MUSIC:%s:%s:%s\n", status, artist, title)
+			rxChar.WriteWithoutResponse([]byte(msg))
+			log.Printf("[OUTBOUND MPRIS] Status: %s | Artist: %s | Title: %s", status, artist, title)
+		}
 	}
 }
 
@@ -342,6 +427,15 @@ func executeMacroBitmask(bitmask int) {
 	}
 	if bitmask&(1<<2) != 0 {
 		exec.Command("grimshot", "save", "area").Start()
+	}
+	if bitmask&(1<<3) != 0 {
+		exec.Command("playerctl", "play-pause").Run()
+	}
+	if bitmask&(1<<4) != 0 {
+		exec.Command("playerctl", "next").Run()
+	}
+	if bitmask&(1<<5) != 0 {
+		exec.Command("playerctl", "previous").Run()
 	}
 }
 
