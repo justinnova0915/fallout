@@ -25,6 +25,7 @@ public:
     void swipeRight();
     void scrollToWorkspace(uint8_t target_idx);
     void update();
+    void setAppIcon(uint16_t icon_id);
     bool sendJpegImageOnTheFly(const uint8_t* jpeg_data, size_t jpeg_size);
 
 private:
@@ -53,6 +54,10 @@ private:
     uint32_t last_log_time_ms_;
     uint8_t update_ticker_;          
     int text_values_[10];
+
+    uint16_t pending_app_icon_id_;
+    uint16_t last_sent_app_icon_id_;
+    bool app_icon_needs_update_;
 
     static constexpr uint16_t FORCED_Y_BASELINE = 40;    
     static constexpr int16_t REST_TEXT_Y_OFFSET = 58;  

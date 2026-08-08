@@ -24,6 +24,16 @@ static constexpr uint16_t ICON_VP_BASE   = 0x4000;
 static constexpr uint16_t TEXT_SP_BASE   = 0x5000;
 static constexpr uint16_t TEXT_VP_BASE   = 0x2000; 
 
+// APP ICON POINTER LAYOUT ADDRESSES
+static constexpr uint16_t APP_ICON_SP    = 0x6A00;
+static constexpr uint16_t APP_ICON_VP    = 0x6B00;
+
+// ============================================================================
+// APP ICON OFFSET CONFIGURATION
+// ============================================================================
+static constexpr int16_t APP_ICON_OFFSET_X = 100; 
+static constexpr int16_t APP_ICON_OFFSET_Y = 150; 
+
 static constexpr uint16_t COLOR_YELLOW   = 0xFFE0; 
 static constexpr uint16_t COLOR_BLACK    = 0x0000; 
 
@@ -46,7 +56,10 @@ Screen::Screen(const Config& config)
       slot_spacing_(90.0f),    
       transition_start_time_us_(0),
       last_log_time_ms_(0),
-      update_ticker_(0) {
+      update_ticker_(0),
+      pending_app_icon_id_(4),
+      last_sent_app_icon_id_(0xFFFF),
+      app_icon_needs_update_(true) {
     
     for (int i = 0; i < 10; ++i) {
         uniform_slots_x_[i] = static_cast<uint16_t>(starting_x_ + (i * slot_spacing_));
@@ -73,6 +86,13 @@ Screen::Screen(const Config& config)
 
     updateHardwarePositions(0.0f);
     ESP_LOGI(TAG, "Dynamic Relay Multi-Stride Engine loaded. Anchored on Index [%d]", current_focus_idx_);
+}
+
+void Screen::setAppIcon(uint16_t icon_id) {
+    if (pending_app_icon_id_ != icon_id) {
+        pending_app_icon_id_ = icon_id;
+        app_icon_needs_update_ = true;
+    }
 }
 
 void Screen::scrollToWorkspace(uint8_t target_idx) {
@@ -114,6 +134,8 @@ void Screen::swipeRight() {
 void Screen::updateHardwarePositions(float ease_progress) {
     update_ticker_++;
     bool allow_property_update = (state_ == State::IDLE) || (update_ticker_ % 3 == 0);
+
+    bool is_fully_settled = (state_ == State::IDLE) && (stride_balance_delta_ == 0);
 
     for (uint16_t i = 0; i < 10; ++i) {
         float slot_x = static_cast<float>(uniform_slots_x_[i]);
@@ -181,6 +203,43 @@ void Screen::updateHardwarePositions(float ease_progress) {
         }
 
         moveDwinElementsPacked(ICON_SP_BASE + (i * ADDR_INCREMENT), dynamic_x, static_cast<uint16_t>(icon_y_calculated), false);
+
+        // ============================================================================
+        // APP ICON DEFERRED FRAME & POSITION SWAPPER
+        // ============================================================================
+        if (i == current_focus_idx_) {
+            if (!is_fully_settled) {
+                // 1. CAROUSEL IN MOTION:
+                // Hide off-screen instantly
+                moveDwinElementsPacked(APP_ICON_SP, 0x7FFF, 0x7FFF, false);
+
+                // Update VP frame while hidden off-screen
+                if (app_icon_needs_update_ || last_sent_app_icon_id_ != pending_app_icon_id_) {
+                    sendDwinWriteSingle(APP_ICON_VP, pending_app_icon_id_);
+                    last_sent_app_icon_id_ = pending_app_icon_id_;
+                    app_icon_needs_update_ = false;
+                }
+            } else {
+                // 2. CAROUSEL SETTLED AT FINAL DESTINATION:
+                // If an icon update arrived while sitting still, hide -> change frame -> unhide
+                if (app_icon_needs_update_ || last_sent_app_icon_id_ != pending_app_icon_id_) {
+                    moveDwinElementsPacked(APP_ICON_SP, 0x7FFF, 0x7FFF, false);
+                    vTaskDelay(pdMS_TO_TICKS(5000));
+
+                    sendDwinWriteSingle(APP_ICON_VP, pending_app_icon_id_);
+                    last_sent_app_icon_id_ = pending_app_icon_id_;
+                    app_icon_needs_update_ = false;
+                }
+
+                int32_t final_x = static_cast<int32_t>(dynamic_x) + APP_ICON_OFFSET_X;
+                int32_t final_y = static_cast<int32_t>(icon_y_calculated) + APP_ICON_OFFSET_Y;
+
+                if (final_x < 0) final_x = 0;
+                if (final_y < 0) final_y = 0;
+
+                moveDwinElementsPacked(APP_ICON_SP, static_cast<uint16_t>(final_x), static_cast<uint16_t>(final_y), false);
+            }
+        }
         
         float text_x = static_cast<float>(dynamic_x) + 200.0f;
         float text_size_dots = 36.0f;
@@ -282,15 +341,11 @@ void Screen::update() {
     if (state_ == State::MOVING) {
         int64_t elapsed_ms = (esp_timer_get_time() - transition_start_time_us_) / 1000;
         
-        // ============================================================================
-        // DYNAMIC ACCELERATION GEARBOX FIX
-        // Dynamically scales down the frame processing duration for multi-step runs
-        // ============================================================================
         uint32_t dynamic_duration_ms = cfg_.step_duration_ms;
         if (std::abs(stride_balance_delta_) >= 2) {
-            dynamic_duration_ms = 80;  // High-speed skip frames for large jumps
+            dynamic_duration_ms = 80;  
         } else if (std::abs(stride_balance_delta_) == 1) {
-            dynamic_duration_ms = 140; // Mid-speed skip frames
+            dynamic_duration_ms = 140; 
         }
 
         float progress = static_cast<float>(elapsed_ms) / static_cast<float>(dynamic_duration_ms);
